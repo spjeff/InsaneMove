@@ -48,9 +48,9 @@ param (
     [Alias("sca")]
     [switch]$siteCollectionAdmin = $false,
 
-	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Update local User Profile Service with cloud personal URL.  Helps with Hybrid Onedrive audience rules.  Need to recompile audiences after running this.')]
-	[Alias("ups")]
-	[switch]$userProfileSetHybridURL = $false
+    [Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Update local User Profile Service with cloud personal URL.  Helps with Hybrid Onedrive audience rules.  Need to recompile audiences after running this.')]
+    [Alias("ups")]
+    [switch]$userProfileSetHybridURL = $false
 )
 
 # Plugin
