@@ -8,8 +8,8 @@
 .NOTES
 	File Name		: InsaneMove.ps1
 	Author			: Jeff Jones - @spjeff
-	Version			: 0.42
-	Last Modified	: 01-29-2016
+	Version			: 0.43
+	Last Modified	: 02-02-2016
 .LINK
 	Source Code
 	http://www.github.com/spjeff/insanemove
@@ -46,7 +46,11 @@ param (
 	
     [Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Grant Site Collection Admin rights to the migration user specified in XML settings file.')]
     [Alias("sca")]
-    [switch]$siteCollectionAdmin = $false
+    [switch]$siteCollectionAdmin = $false,
+
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Update local User Profile Service with cloud personal URL.  Helps with Hybrid Onedrive audience rules.  Need to recompile audiences after running this.')]
+	[Alias("ups")]
+	[switch]$userProfileSetHybridURL = $false
 )
 
 # Plugin
@@ -634,13 +638,23 @@ Function MeasureSiteCSV {
     "<MeasureSiteCSV>"
     # Populate CSV with local farm SharePoint site collection size
     $csv = Import-Csv $fileCSV
+	
+	# add column if missing
+	$found = ($csv | gm |? {$_.name -eq "SPStorage"})
+	if (!$found) {
+		$csv | Add-Member -MemberType NoteProperty -Name "SPStorage" -Value ""
+	}
+	
+	$total = 0
     foreach ($row in $csv) {
         $s = Get-SPSite $row.SourceURL
         if ($s) {
             $storage = [Math]::Round($s.Usage.Storage/1GB, 2)
+			$total += $storage
             $row.SPStorage = $storage
         }
     }
+	Write-Host "total = $total"
     $csv | Export-Csv $fileCSV -Force
 }
 
@@ -673,6 +687,35 @@ Function SiteCollectionAdmin($user) {
     }
 }
 
+Function UserProfileSetHybridURL() {
+	# UPS Manager
+	$site = (Get-SPSite)[0]
+	$context = Get-SPServiceContext $site
+	$profileManager = New-Object Microsoft.Office.Server.UserProfiles.UserProfileManager($context)
+	
+	# MySite Host URL
+	$myhost =  $settings.settings.tenant.adminURL.replace("-admin","-my")
+	if (!$myhost.EndsWith("/")) {$myhost += "/"}
+	
+	# Loop CSV
+	$csv = Import-Csv $fileCSV
+	foreach ($row in $csv) {
+		$login = $row.MySiteEmail.Split("@")[0]
+		$p = $profileManager.GetUserProfile($login)
+		if ($p) {
+			# User Found
+			$dest = $row["DestinationURL"]
+			if (!$dest.EndsWith("/")) {$dest += "/"}
+			
+			# Update Properties
+			$p["PersonalUrl"].Value = $row["DestinationURL"]
+			$p["UrlToCreatePersonalSite"].Value = $row["DestinationURL"]
+			$p["RemotePersonalSiteHostUrl"].Value = $myhost
+			$p["HybridRemotePersonalSiteHostUrl"].Value = $myhost
+			$p.Commit()
+		}
+	}
+}
 Function Main() {
     "<Main>"
     # Start LOG
@@ -686,7 +729,10 @@ Function Main() {
     Write-Host "fileCSV = $fileCSV"
 
     # Core logic
-    if ($measure) {
+	if ($userProfileSetHybridURL) {
+		# Update local user profiles.  Set Personal site URL for Hybrid OneDrive audience compilation and redirect
+		UserProfileSetHybridURL
+    } elseif ($measure) {
         # Populate CSV with size (GB)
         MeasureSiteCSV
     } elseif ($readOnly) {
