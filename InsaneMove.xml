@@ -3,8 +3,10 @@
 	<tenant>
 		<adminURL>https://tenant-admin.sharepoint.com</adminURL>
 		<adminUser>admin@tenant.onmicrosoft.com</adminUser>
+		<testUser>test@tenant.onmicrosoft.com</testUser>
+		<suffix>tenant.onmicrosoft.com</suffix>
 	</tenant>
-	<maxWorker>4</maxWorker>
+	<maxWorker>2</maxWorker>
 	<notify>
 		<smtp>mailhub</smtp>
 		<from>sharepoint-no-reply@company.com</from>

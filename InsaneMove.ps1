@@ -8,8 +8,8 @@
 .NOTES
 	File Name		: InsaneMove.ps1
 	Author			: Jeff Jones - @spjeff
-	Version			: 0.43
-	Last Modified	: 02-02-2016
+	Version			: 0.45
+	Last Modified	: 02-15-2016
 .LINK
 	Source Code
 	http://www.github.com/spjeff/insanemove
@@ -19,7 +19,7 @@
 param (
     [Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='CSV list of source and destination SharePoint site URLs to copy to Office 365.')]
     [string]$fileCSV,
-	
+
     [Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Verify all Office 365 site collections.  Prep step before real migration.')]
     [Alias("v")]
     [switch]$verifyCloudSites = $false,
@@ -43,10 +43,11 @@ param (
     [Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Unlock sites read-write.')]
     [Alias("rw")]
     [switch]$readWrite = $false,
-	
+
     [Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Grant Site Collection Admin rights to the migration user specified in XML settings file.')]
     [Alias("sca")]
     [switch]$siteCollectionAdmin = $false,
+
 
     [Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Update local User Profile Service with cloud personal URL.  Helps with Hybrid Onedrive audience rules.  Need to recompile audiences after running this.')]
     [Alias("ups")]
@@ -103,6 +104,9 @@ Function ReadIISPW {
                 $pass = $pool.processModel.password
                 if ($pass) {
                     break
+
+
+
                 }
             }
         }
@@ -115,6 +119,9 @@ Function ReadIISPW {
                 $pass = $pool.WAMUserPass
                 if ($pass) {
                     break
+
+
+
                 }
             }
         }
@@ -140,6 +147,7 @@ Function DetectVendor() {
         $found = Get-ChildItem "\\$($s.Address)\C$\Program Files (x86)\Sharegate\Sharegate.exe" -ErrorAction SilentlyContinue
         if ($found) {
             $coll += $s.Address
+
         }
     }
 	
@@ -158,6 +166,7 @@ Function ReadCloudPW() {
     "<ReadCloudPW>"
     # Prompt for admin password
     $global:cloudPW = Read-Host "Enter O365 Cloud Password for $($settings.settings.tenant.adminUser)"
+
 }
 
 Function CloseSession() {
@@ -178,6 +187,8 @@ Function VerifySchtask($name, $file) {
 	if ($found) {
 		$found | Unregister-ScheduledTask -Confirm:$false
 	}
+
+
 
 	$user = "domain\farm"
 	$pw = "password"
@@ -216,6 +227,7 @@ VerifySchtask "worker1" "d:\InsaneMove\worker1.ps1"
             $obj = New-Object -TypeName PSObject -Prop (@{"Id"=$i;"PC"=$pc})
             $global:workers += $obj			
             $i++
+
         }
     }
     "WORKERS"
@@ -238,6 +250,7 @@ Function CreateTracker() {
         $site = Get-SPSite $row.SourceURL
         if ($site) {
             $SPStorage = [Math]::Round($site.Usage.Storage/1MB,2)
+
         }
 		
         # MySite URL Lookup
@@ -245,6 +258,7 @@ Function CreateTracker() {
             $destUrl = FindCloudMySite $row.MySiteEmail
         } else {
             $destUrl = $row.DestinationURL;
+
         }
 
         # Add row
@@ -278,6 +292,7 @@ Function CreateTracker() {
         if ($j -ge $global:workers.count) {
             # Reset, back to first Session
             $j = 0
+
         }
     }
 	
@@ -303,8 +318,10 @@ Function UpdateTracker () {
 			
             # Close old session
             $b | Remove-PSSession
+
         }
 		
+
         # Remote session
         $s = Get-PSSession |? {$_.ComputerName -eq $pc}
         if (!$s) {
@@ -319,7 +336,7 @@ Function UpdateTracker () {
         $schtask = Invoke-Command -Session $s -Command $sb
         if ($schtask) {
             "[SCHTASK]"
-			$schtask | select {$pc},TaskName,State | Format-Table -a
+            $schtask | select {$pc},TaskName,State | Format-Table -a
             "[SESSION-UpdateTracker]"
             Get-PSSession | Format-Table -a
             if ($schtask.State -eq 3) {
@@ -347,6 +364,7 @@ Function UpdateTracker () {
 						
                         # Delete XML
                         Remove-Item $resultfile -confirm:$false -ErrorAction SilentlyContinue
+
                     }
 
                     # Error
@@ -355,8 +373,12 @@ Function UpdateTracker () {
                     $task.Error |% {
                         $err += ($_|ConvertTo-Xml).OuterXml
                         $errcount++
+
                     }
                     $row.ErrorCount = $errCount
+
+
+
                 }
             }
         }
@@ -408,7 +430,7 @@ Function ExecuteSiteCopy($row, $worker) {
     Write-Host "$srcUrl,$destUrl" -Fore yellow
 
     # Execute
-	$sb = [Scriptblock]::Create($cmd) 
+    $sb = [Scriptblock]::Create($cmd) 
     return Invoke-Command $sb -Session $s
 }
 
@@ -420,6 +442,7 @@ Function FindCloudMySite ($MySiteEmail) {
     if ($profile) {
         if ($profile.PersonalUrl) {
             $url = $profile.PersonalUrl.TrimEnd('/')
+
         }
     }
     Write-Host "SEARCH for $MySiteEmail found URL $url" -Fore Yellow
@@ -477,6 +500,7 @@ Function CopySites() {
                     $row.Status = "InProgress"
                     $row.TimeCopyStart = (Get-Date).ToString()
                 }
+
             }
 				
             # Progress bar %
@@ -489,6 +513,7 @@ Function CopySites() {
                 $elapsed = (Get-Date) - $start
                 $remain = ($elapsed.TotalSeconds) / ($prct / 100.0)
                 $eta = (Get-Date).AddSeconds($remain - $elapsed.TotalSeconds)
+
             }
 			
             # Display
@@ -499,12 +524,14 @@ Function CopySites() {
             $global:track |? {$_.Status -eq "InProgress"} | select CsvID,WorkerID,PC,SourceURL,DestinationURL | Format-Table -AutoSize
             $grp = $global:track | group Status
             $grp | select Count,Name | sort Name | Format-Table -AutoSize
+
         }
 		
         # Write CSV with partial results.  Enables monitoring long runs.
         if ($csvCounter -gt 5) {
             WriteCSV
             $csvCounter = 0
+
         }
 
         # Latest counter
@@ -546,6 +573,7 @@ Function VerifyCloudSites() {
         } else {
             BulkCreateMysite $batch
             $batch = @()
+
         }
     }
     if ($batch) {
@@ -597,9 +625,18 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
             # Provision MYSITE
             $global:collMySiteEmail += $MySiteEmail
         } else {
+            # INCREASE QUOTA beyond current usage
+            $currentUsage = $web.Site.usage.storage/1MB
+            $defaultQuota = 1024 * 10 * 5
+            if ($currentUsage -gt $defaultQuota) {
+                $curr = [system.math]::round($currentUsage/10240,0)
+                $defaultQuota = 1024 * 10 * ($curr + 2)
+            }
+			
             # Provision TEAMSITE
-            $quota = 1024*50
+
             New-SPOSite -Owner $rae -Url $destUrl -NoWait -StorageQuota $quota 
+
         }
     } else {
         Write-Host "- FOUND $destUrl"
@@ -638,23 +675,28 @@ Function MeasureSiteCSV {
     "<MeasureSiteCSV>"
     # Populate CSV with local farm SharePoint site collection size
     $csv = Import-Csv $fileCSV
+
+
 	
-	# add column if missing
-	$found = ($csv | gm |? {$_.name -eq "SPStorage"})
-	if (!$found) {
-		$csv | Add-Member -MemberType NoteProperty -Name "SPStorage" -Value ""
-	}
+    # add column if missing
+    $found = ($csv | gm |? {$_.name -eq "SPStorage"})
+    if (!$found) {
+
+
+
+        $csv | Add-Member -MemberType NoteProperty -Name "SPStorage" -Value ""
+    }
 	
-	$total = 0
+    $total = 0
     foreach ($row in $csv) {
         $s = Get-SPSite $row.SourceURL
         if ($s) {
             $storage = [Math]::Round($s.Usage.Storage/1GB, 2)
-			$total += $storage
+            $total += $storage
             $row.SPStorage = $storage
         }
     }
-	Write-Host "total = $total"
+    Write-Host "total = $total"
     $csv | Export-Csv $fileCSV -Force
 }
 
@@ -680,6 +722,7 @@ Function SiteCollectionAdmin($user) {
             $url = FindCloudMySite $row.MySiteEmail
         } else  {
             $url = $row.DestinationURL.TrimEnd('/')
+
         }
         $url
         $site = Get-MSPOSite $url
@@ -688,33 +731,36 @@ Function SiteCollectionAdmin($user) {
 }
 
 Function UserProfileSetHybridURL() {
-	# UPS Manager
-	$site = (Get-SPSite)[0]
-	$context = Get-SPServiceContext $site
-	$profileManager = New-Object Microsoft.Office.Server.UserProfiles.UserProfileManager($context)
+    # UPS Manager
+    $site = (Get-SPSite)[0]
+    $context = Get-SPServiceContext $site
+    $profileManager = New-Object Microsoft.Office.Server.UserProfiles.UserProfileManager($context)
 	
-	# MySite Host URL
-	$myhost =  $settings.settings.tenant.adminURL.replace("-admin","-my")
-	if (!$myhost.EndsWith("/")) {$myhost += "/"}
+    # MySite Host URL
+    $myhost =  $settings.settings.tenant.adminURL.replace("-admin","-my")
+    if (!$myhost.EndsWith("/")) {
+        $myhost += "/"
+    }
 	
-	# Loop CSV
-	$csv = Import-Csv $fileCSV
-	foreach ($row in $csv) {
-		$login = $row.MySiteEmail.Split("@")[0]
-		$p = $profileManager.GetUserProfile($login)
-		if ($p) {
-			# User Found
-			$dest = $row["DestinationURL"]
-			if (!$dest.EndsWith("/")) {$dest += "/"}
+    # Loop CSV
+    $csv = Import-Csv $fileCSV
+    foreach ($row in $csv) {
+        $login = $row.MySiteEmail.Split("@")[0]
+        $p = $profileManager.GetUserProfile($login)
+        if ($p) {
+            # User Found
+            $dest = $row.DestinationURL
+            if (!$dest.EndsWith("/")) {
+                $dest += "/"
+            }
+            $dest = $dest.Replace($myhost,"/")
 			
-			# Update Properties
-			$p["PersonalUrl"].Value = $row["DestinationURL"]
-			$p["UrlToCreatePersonalSite"].Value = $row["DestinationURL"]
-			$p["RemotePersonalSiteHostUrl"].Value = $myhost
-			$p["HybridRemotePersonalSiteHostUrl"].Value = $myhost
-			$p.Commit()
-		}
-	}
+
+            # Update Properties - drives URL redirect Audience
+            $p["PersonalSpace"].Value = $row["DestinationURL"]
+            $p.Commit()
+        }
+    }
 }
 Function Main() {
     "<Main>"
@@ -729,9 +775,9 @@ Function Main() {
     Write-Host "fileCSV = $fileCSV"
 
     # Core logic
-	if ($userProfileSetHybridURL) {
-		# Update local user profiles.  Set Personal site URL for Hybrid OneDrive audience compilation and redirect
-		UserProfileSetHybridURL
+    if ($userProfileSetHybridURL) {
+        # Update local user profiles.  Set Personal site URL for Hybrid OneDrive audience compilation and redirect
+        UserProfileSetHybridURL
     } elseif ($measure) {
         # Populate CSV with size (GB)
         MeasureSiteCSV
@@ -746,6 +792,7 @@ Function Main() {
         ReadCloudPW
         ConnectCloud
         SiteCollectionAdmin $settings.settings.tenant.adminUser
+        SiteCollectionAdmin $settings.settings.tenant.testUser
     } else {
         if ($verifyCloudSites) {
             # Create site collection
