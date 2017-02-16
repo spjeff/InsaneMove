@@ -8,8 +8,8 @@
 .NOTES
 	File Name		: InsaneMove.ps1
 	Author			: Jeff Jones - @spjeff
-	Version			: 0.45
-	Last Modified	: 02-15-2016
+	Version			: 0.46
+	Last Modified	: 02-16-2016
 .LINK
 	Source Code
 	http://www.github.com/spjeff/insanemove
@@ -119,9 +119,6 @@ Function ReadIISPW {
                 $pass = $pool.WAMUserPass
                 if ($pass) {
                     break
-
-
-
                 }
             }
         }
@@ -146,8 +143,13 @@ Function DetectVendor() {
     foreach ($s in $spservers) {
         $found = Get-ChildItem "\\$($s.Address)\C$\Program Files (x86)\Sharegate\Sharegate.exe" -ErrorAction SilentlyContinue
         if ($found) {
-            $coll += $s.Address
-
+            if ($settings.settings.optionalLimitServers) {
+                if ($settings.settings.optionalLimitServers.Contains($s.Address)) {
+                    $coll += $s.Address
+                }
+            } else {
+                $coll += $s.Address
+            }
         }
     }
 	

@@ -11,4 +11,5 @@
 		<smtp>mailhub</smtp>
 		<from>sharepoint-no-reply@company.com</from>
 	</notify>
+	<optionalLimitServers></optionalLimitServers>
 </settings>
