@@ -3,19 +3,6 @@
 	Insane Move - Copy sites to Office 365 in parallel.  ShareGate Insane Mode times ten!
 .DESCRIPTION
 	Copy SharePoint site collections to Office 365 in parallel.  CSV input list of source/destination URLs.  XML with general preferences.
-	
-	Comments and suggestions always welcome!  spjeff@spjeff.com or @spjeff
-	
-	Requires folder "D:\InsaneMove\" to run within.  Please create or update below code.  Future planned feature to auto detect current folder.
-	
-.NOTES
-	File Name		: InsaneMove.ps1
-	Author			: Jeff Jones - @spjeff
-	Version			: 0.53
-	Last Modified	: 04-04-2017
-.LINK
-	Source Code
-	http://www.github.com/spjeff/insanemove
 #>
 
 [CmdletBinding()]
@@ -205,7 +192,6 @@ Function VerifySchtask($name, $file) {
 VerifySchtask "worker1-[USERNAME]" "d:\InsaneMove\worker1-[USERNAME].ps1"
 '@
 $cmd = $cmd.replace("[USERDOMAIN]", $env:userdomain)
-$cmd = $cmd.replace("[USERNAME]", $env:username)
 $cmd = $cmd.replace("[USERPASS]", $global:pass.replace("`$","``$"))
 $cmd
 
@@ -218,7 +204,15 @@ $cmd
 		$s = New-PSSession -ComputerName $pc -Credential $global:cred -Authentication CredSSP -ErrorAction SilentlyContinue
         $s
         1..$maxWorker |% {
+			# Optional - run odd (1,3,5...) workers as different account 
+			$runasUser = $env:username
+			if ($wid % 2 -eq 1) {
+				# Odd number worker # schtask
+				$runasUser = $settings.optionalRunOddAsDifferentUser
+			}
+		
             # create worker
+			$curr = $cmd.replace("[USERNAME]",$runasUser)
             $curr = $cmd.replace("worker1","worker$wid")
             Write-Host "CREATE Worker$wid-$username on $pc ..." -Fore Yellow
             $sb = [Scriptblock]::Create($curr)
@@ -419,7 +413,8 @@ Function ExecuteSiteCopy($row, $worker) {
 		$copyparam = "-CopySettings `$csMysite"
 	}
 	$username = $env:username
-	$ps = "`$pw='$global:cloudPW';`nmd ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$username-$now.log"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`n`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;`n`$cred = New-Object System.Management.Automation.PSCredential (""$($settings.settings.tenant.adminUser)"", `$secpw);`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Credential `$cred;`nif (`$src.Url -eq `$dest.Url) {`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge `$copyparam -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$username.xml"" -Force;`n} else {`n""URLs don't match""`n}`nStop-Transcript"
+	$workerUser = $settings.settings.tenant.workerUser -f $wid
+	$ps = "`$pw='$global:cloudPW';`nmd ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$username-$now.log"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`n`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;`n`$cred = New-Object System.Management.Automation.PSCredential (""$workerUser"", `$secpw);`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Credential `$cred;`nif (`$src.Url -eq `$dest.Url) {`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge `$copyparam -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$username.xml"" -Force;`n} else {`n""URLs don't match""`n}`nStop-Transcript"
     $ps | Out-File "\\$pc\d$\insanemove\worker$wid-$username.ps1" -Force
     Write-Host $ps -Fore Yellow
 
@@ -694,17 +689,25 @@ Function LockSite($lock) {
 	}
 }
 
-Function SiteCollectionAdmin($user) {
+Function SiteCollectionAdmin() {
 	"<SiteCollectionAdmin>"
 	# Grant site collection admin rights
 	$csv = Import-Csv $fileCSV
 	foreach ($row in $csv) {
+		# Current destination URL
 		if ($row.MySiteEmail) {
 			$url = FindCloudMySite $row.MySiteEmail
 		} else  {
 			$url = $row.DestinationURL.TrimEnd('/')
 		}
+		
+		# Match with tracking for worker ID
+		$row = $global:track |? {$_.DestinationURL -eq $url}
+		$user = $settings.tenant.workerUser -f $row.WorkerID
+		
+		# Grant SCA to worker
 		$url
+		$user
 		Set-PnPTenantSite -Url $url -Owners $user
 	}
 }
@@ -793,7 +796,8 @@ Function Main() {
 		# Grant cloud sites SCA permission to XML migration cloud user
 		ReadCloudPW
 		ConnectCloud
-		SiteCollectionAdmin $settings.settings.tenant.adminUser
+		CreateTracker
+		SiteCollectionAdmin
 	} else {
 		if ($verifyCloudSites) {
 			# Create site collection
