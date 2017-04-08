@@ -44,7 +44,11 @@ param (
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Update local User Profile Service with cloud personal URL.  Helps with Hybrid Onedrive audience rules.  Need to recompile audiences after running this.')]
 	[Alias("ups")]
-	[switch]$userProfileSetHybridURL = $false
+	[switch]$userProfileSetHybridURL = $false,
+
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Dry run replaces core "Copy-Site" with "CCopy-Site" to execute all queueing but not transfer any data.')]
+	[Alias("test")]
+	[switch]$dryRun = $false
 )
 
 # Plugin
@@ -414,7 +418,10 @@ Function ExecuteSiteCopy($row, $worker) {
 	}
 	$username = $env:username
 	$workerUser = $settings.settings.tenant.workerUser -f $wid
-	$ps = "`$pw='$global:cloudPW';`nmd ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$username-$now.log"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`n`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;`n`$cred = New-Object System.Management.Automation.PSCredential (""$workerUser"", `$secpw);`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Credential `$cred;`nif (`$src.Url -eq `$dest.Url) {`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge `$copyparam -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$username.xml"" -Force;`n} else {`n""URLs don't match""`n}`nStop-Transcript"
+	$ps = "`$pw='$global:cloudPW';`nmd ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$username-$now.log"";`$start = Get-Date;`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`n`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;`n`$cred = New-Object System.Management.Automation.PSCredential (""$workerUser"", `$secpw);`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Credential `$cred;`nif (`$src.Url -eq `$dest.Url) {`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge `$copyparam -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$username.xml"" -Force;`n} else {`n""URLs don't match""`n}`nWrite-Host ""Elapsed Time: "" ((Get-Date) - `$start);`n`nStop-Transcript"
+	if ($dryRun) {
+		$ps = $ps.Replace("Copy-Site","CCopy-Site")
+	}
     $ps | Out-File "\\$pc\d$\insanemove\worker$wid-$username.ps1" -Force
     Write-Host $ps -Fore Yellow
 
@@ -709,6 +716,10 @@ Function SiteCollectionAdmin() {
 		$url
 		$user
 		Set-PnPTenantSite -Url $url -Owners $user
+
+		# Display
+		$web = Get-PnPWeb $url
+		New-PnPUser -LoginName $user -Web $web
 	}
 }
 
@@ -805,17 +816,29 @@ Function Main() {
 			ConnectCloud
 			VerifyCloudSites
 		} else {
-			# Copy site content
-			VerifyPSRemoting
-			ReadIISPW
-			ReadCloudPW
-			ConnectCloud
-			DetectVendor
-			CloseSession
-			CreateWorkers
-			CopySites
-			CloseSession
-			WriteCSV
+			if (!$dryRun) {
+				# Prompt to verify
+				$continue = $false
+				$choice = Read-Host "Do you want to continue? (Y/N)"
+				if ($choice -like "y*") {
+					$continue = $true
+				} else {
+					Write-Host "HALT - User did not confirm" -Fore Red
+				}
+			}
+			if ($dryRun -or $continue) {
+				# Copy site content
+				VerifyPSRemoting
+				ReadIISPW
+				ReadCloudPW
+				ConnectCloud
+				DetectVendor
+				CloseSession
+				CreateWorkers
+				CopySites
+				CloseSession
+				WriteCSV
+			}
 		}
 	}
 	
