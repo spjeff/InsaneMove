@@ -38,26 +38,25 @@ param (
 	[Alias("na")]
 	[switch]$noAccess = $false,
 	
-	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Grant Site Collection Admin rights to the migration user specified in XML settings file.')]
-	[Alias("sca")]
-	[switch]$siteCollectionAdmin = $false,
-	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Update local User Profile Service with cloud personal URL.  Helps with Hybrid Onedrive audience rules.  Need to recompile audiences after running this.')]
 	[Alias("ups")]
 	[switch]$userProfileSetHybridURL = $false,
-
+	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Dry run replaces core "Copy-Site" with "CCopy-Site" to execute all queueing but not transfer any data.')]
-	[Alias("test")]
+	[Alias("d")]
 	[switch]$dryRun = $false
 )
 
 # Plugin
 Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null
+Import-Module Microsoft.Online.SharePoint.PowerShell -ErrorAction SilentlyContinue -WarningAction SilentlyContinue -Prefix M | Out-Null
 Import-Module SharePointPnPPowerShellOnline -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
+
 
 # Config
 $root = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
 [xml]$settings = Get-Content "$root\InsaneMove.xml"
+"$root\InsaneMove.xml"
 $maxWorker = $settings.settings.maxWorker
 
 Function VerifyPSRemoting() {
@@ -138,7 +137,7 @@ Function DetectVendor() {
 		$found = Get-ChildItem "\\$($s.Address)\C$\Program Files (x86)\Sharegate\Sharegate.exe" -ErrorAction SilentlyContinue
 		if ($found) {
 			if ($settings.settings.optionalLimitServers) {
-				if ($settings.settings.optionalLimitServers.Contains($s.Address)) {
+				if ($settings.settings.optionalLimitServers.ToUpper().Contains($s.Address.ToUpper())) {
 					$coll += $s.Address
 				}
 			} else {
@@ -197,7 +196,6 @@ VerifySchtask "worker1-[USERNAME]" "d:\InsaneMove\worker1-[USERNAME].ps1"
 '@
 $cmd = $cmd.replace("[USERDOMAIN]", $env:userdomain)
 $cmd = $cmd.replace("[USERPASS]", $global:pass.replace("`$","``$"))
-$cmd
 
 # Loop available servers
 	$global:workers = @()
@@ -208,16 +206,21 @@ $cmd
 		$s = New-PSSession -ComputerName $pc -Credential $global:cred -Authentication CredSSP -ErrorAction SilentlyContinue
         $s
         1..$maxWorker |% {
-			# Optional - run odd (1,3,5...) workers as different account 
-			$runasUser = $env:username
-			if ($wid % 2 -eq 1) {
-				# Odd number worker # schtask
-				$runasUser = $settings.optionalRunOddAsDifferentUser
+			# Optional - run odd SCHTASK (1,3,5...) as different account 
+			<#
+			if ($settings.settings.optionalSchtaskUser) {
+				if ($wid % 2 -eq 1) {
+					# Odd number worker # schtask
+					$username = $settings.settings.optionalSchtaskUser
+				}
 			}
+			#>
 		
             # create worker
-			$curr = $cmd.replace("[USERNAME]",$runasUser)
-            $curr = $cmd.replace("worker1","worker$wid")
+			$username = $username.ToUpper()
+			$curr = $cmd.replace("[USERNAME]",$username)
+            $curr = $curr.replace("worker1","worker$wid")
+			$curr
             Write-Host "CREATE Worker$wid-$username on $pc ..." -Fore Yellow
             $sb = [Scriptblock]::Create($curr)
             $result = Invoke-Command -Session $s -ScriptBlock $sb
@@ -229,12 +232,14 @@ $cmd
             Remove-Item $resultfile -confirm:$false -ErrorAction SilentlyContinue
 			
             # track worker
-			$obj = New-Object -TypeName PSObject -Prop (@{"Id"=$wid;"PC"=$pc})
+			$obj = New-Object -TypeName PSObject -Prop (@{"Id"=$wid;"PC"=$pc;"uploadUser"=$username})
 			$global:workers += $obj
+			
+			# Increment counters
 			$wid++
 		}
 	}
-	"WORKERS"
+	Write-Host "WORKERS" -Fore Green
 	$global:workers | ft -a
 }
 
@@ -246,11 +251,7 @@ Function CreateTracker() {
 	$global:track = @()
 	$csv = Import-Csv $fileCSV
 	$i = 0	
-	$wid = 0
-	foreach ($row in $csv) {
-		# Assign each row to a Worker
-		$pc = $global:workers[$wid].PC
-		
+	foreach ($row in $csv) {		
 		# Get SharePoint total storage
 		$site = Get-SPSite $row.SourceURL
 		if ($site) {
@@ -270,8 +271,8 @@ Function CreateTracker() {
 			"DestinationURL"=$destUrl;
 			"MySiteEmail"=$row.MySiteEmail;
 			"CsvID"=$i;
-			"WorkerID"=$wid;
-			"PC"=$pc;
+			"WorkerID"="";
+			"PC"="";
 			"Status"="New";
 			"SGResult"="";
 			"SGServer"="";
@@ -291,11 +292,6 @@ Function CreateTracker() {
 
 		# Increment ID
 		$i++
-		$wid++
-		if ($wid -ge $global:workers.count) {
-			# Reset, back to first Session
-			$wid = 0
-		}
 	}
 	
 	# Display
@@ -329,9 +325,12 @@ Function UpdateTracker () {
 			}
 		}
 		
+		# Lookup worker user
+		$worker = $global:workers |? {$_.Id -eq $row.WorkerID}
+		$username = $worker.uploadUser
+		
 		# Check SCHTASK State=Ready
 		$s = Get-PSSession |? {$_.ComputerName -eq $pc}
-		$username = $env:username
 		$cmd = "Get-Scheduledtask -TaskName 'worker$wid-$username'"
 		$sb = [Scriptblock]::Create($cmd)
 		$schtask = $null
@@ -342,6 +341,7 @@ Function UpdateTracker () {
 			"[SESSION-UpdateTracker]"
 			Get-PSSession | ft -a
 			if ($schtask.State -eq 3) {
+				# Completed
 				$row.Status = "Completed"
 				$row.TimeCopyEnd = (Get-Date).ToString()
 				
@@ -396,10 +396,24 @@ Function ExecuteSiteCopy($row, $worker) {
 		$destUrl = FormatCloudMP $row.DestinationURL
 	}
 	
+	# Grant SCA
+	$upn = $settings.settings.tenant.uploadUser
+	Write-Host "Grant SCA $upn to $destUrl" -Fore Green
+	$site = Get-MSPOSite $destUrl
+	
+	Set-SPSite -Identity $srcUrl -LockState Unlock
+	
+	# SPO
+	Set-MSPOUser -Site $site -LoginName $upn -IsSiteCollectionAdmin $true
+	
+	# PNP
+	Set-PnPTenantSite -Url $destUrl -Owners $upn
+	
 	# Make NEW Session - remote PowerShell
 	$username = $env:domainuser
     $wid = $worker.Id	
     $pc = $worker.PC
+	$username = $worker.uploadUser
 	$s = Get-PSSession |? {$_.ComputerName -eq $pc}
 	
 	# Generate local secure CloudPW
@@ -416,25 +430,31 @@ Function ExecuteSiteCopy($row, $worker) {
 		# MySite /personal/ = always RENAME
 		$copyparam = "-CopySettings `$csMysite"
 	}
-	$username = $env:username
-	$workerUser = $settings.settings.tenant.workerUser -f $wid
-	$ps = "`$pw='$global:cloudPW';`nmd ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$username-$now.log"";`$start = Get-Date;`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`n`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;`n`$cred = New-Object System.Management.Automation.PSCredential (""$workerUser"", `$secpw);`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Credential `$cred;`nif (`$src.Url -eq `$dest.Url) {`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge `$copyparam -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$username.xml"" -Force;`n} else {`n""URLs don't match""`n}`nWrite-Host ""Elapsed Time: "" ((Get-Date) - `$start);`n`nStop-Transcript"
+	$uploadUser = $settings.settings.tenant.uploadUser
+	$uploadPass = $settings.settings.tenant.uploadPass
+	
+	$ps = "`$pw='$uploadPass';md ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$username-$now.log"";`n""uploadUser=$uploadUser"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;
+	`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;
+	`$cred = New-Object System.Management.Automation.PSCredential (""$uploadUser"", `$secpw);
+	;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$username.xml"" -Force;`n} else {`n""URLs don't match""`n}`nSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
+	# Dry run
 	if ($dryRun) {
-		$ps = $ps.Replace("Copy-Site","CCopy-Site")
+		$ps = $ps.Replace("Copy-Site","NoCopy-Site")
+		$ps = $ps.Replace("Set-SPSite","NoSet-SPSite")
 	}
     $ps | Out-File "\\$pc\d$\insanemove\worker$wid-$username.ps1" -Force
     Write-Host $ps -Fore Yellow
-
+	
     # Invoke SCHTASK
     $cmd = "Get-ScheduledTask -TaskName ""worker$wid-$username"" | Start-ScheduledTask"
 	
 	# Display
     Write-Host "START worker $wid on $pc" -Fore Green
 	Write-Host "$srcUrl,$destUrl" -Fore yellow
-
+	
 	# Execute
 	$sb = [Scriptblock]::Create($cmd) 
-	return Invoke-Command $sb -Session $s
+	Invoke-Command $sb -Session $s
 }
 
 Function FindCloudMySite ($MySiteEmail) {
@@ -484,15 +504,24 @@ Function CopySites() {
 			$active = $global:track |? {$_.Status -eq "InProgress" -and $_.WorkerID -eq $wid}
             
 			if (!$active) {
-				Write-Host " -- AVAIL" -Fore Green
 				# Available session.  Assign new work
+				Write-Host " -- AVAIL" -Fore Green
 				Write-Host $wid -Fore Yellow
-				$row = $global:track |? {$_.Status -eq "New" -and $_.WorkerID -eq $wid}
+				$row = $global:track |? {$_.Status -eq "New"}
 			
                 if ($row) {
+					# First row only, no array
                     if ($row -is [Array]) {
                         $row = $row[0]
                     }
+					
+					# Update DB tracking
+					$row.WorkerID = $wid
+					$row.PC = $global:workers[$wid].PC
+				    $row.Status = "InProgress"
+					$row.TimeCopyStart = (Get-Date).ToString()
+					
+					# Display
 					$row |ft -a
 					"GLOBAL TRACK"
 					$global:track | ft -a
@@ -500,11 +529,7 @@ Function CopySites() {
                     # Kick off copy
 					Start-Sleep 5
 					"sleep 5 sec..."
-				    $result = ExecuteSiteCopy $row $worker
-
-				    # Update DB tracking
-				    $row.Status = "InProgress"
-					$row.TimeCopyStart = (Get-Date).ToString()
+				    ExecuteSiteCopy $row $worker				    
                 }
 			} else {
 				Write-Host " -- NO AVAIL" -Fore Green
@@ -667,6 +692,7 @@ Function ConnectCloud {
 	
 	# Connect PNP
 	Connect-PnpOnline -URL $settings.settings.tenant.adminURL -Credential $c
+	Connect-MSPOService -URL $settings.settings.tenant.adminURL -Credential $c
 }
 
 Function MeasureSiteCSV {
@@ -693,33 +719,6 @@ Function LockSite($lock) {
 		Set-SPSite $url -LockState $lock
 		"[SPSITE]"
 		Get-SPSite $url | Select URL,*Lock* | ft -a
-	}
-}
-
-Function SiteCollectionAdmin() {
-	"<SiteCollectionAdmin>"
-	# Grant site collection admin rights
-	$csv = Import-Csv $fileCSV
-	foreach ($row in $csv) {
-		# Current destination URL
-		if ($row.MySiteEmail) {
-			$url = FindCloudMySite $row.MySiteEmail
-		} else  {
-			$url = $row.DestinationURL.TrimEnd('/')
-		}
-		
-		# Match with tracking for worker ID
-		$row = $global:track |? {$_.DestinationURL -eq $url}
-		$user = $settings.tenant.workerUser -f $row.WorkerID
-		
-		# Grant SCA to worker
-		$url
-		$user
-		Set-PnPTenantSite -Url $url -Owners $user
-
-		# Display
-		$web = Get-PnPWeb $url
-		New-PnPUser -LoginName $user -Web $web
 	}
 }
 
@@ -803,12 +802,6 @@ Function Main() {
 	} elseif ($noAccess) {
 		# NoAccess on-prem sites
 		LockSite "NoAccess"	
-	} elseif ($siteCollectionAdmin) {
-		# Grant cloud sites SCA permission to XML migration cloud user
-		ReadCloudPW
-		ConnectCloud
-		CreateTracker
-		SiteCollectionAdmin
 	} else {
 		if ($verifyCloudSites) {
 			# Create site collection
@@ -819,11 +812,12 @@ Function Main() {
 			if (!$dryRun) {
 				# Prompt to verify
 				$continue = $false
-				$choice = Read-Host "Do you want to continue? (Y/N)"
+				Write-Host "Do you want to continue? (Y/N)" -Fore Yellow
+				$choice = Read-Host
 				if ($choice -like "y*") {
 					$continue = $true
 				} else {
-					Write-Host "HALT - User did not confirm" -Fore Red
+					Write-Host "HALT - User did not confirm data copy." -Fore Red
 				}
 			}
 			if ($dryRun -or $continue) {
@@ -860,5 +854,4 @@ Function Main() {
 	Write-Host $fileCSV
 	if (!$psISE) {Stop-Transcript}
 }
-
 Main
