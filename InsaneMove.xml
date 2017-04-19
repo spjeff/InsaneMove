@@ -4,15 +4,14 @@
 		<adminURL>https://tenant-admin.sharepoint.com</adminURL>
 		<adminUser>spadmin@tenant.onmicrosoft.com</adminUser>
 		<suffix>tenant.onmicrosoft.com</suffix>
-		
-		<uploadUser>spadmin@tenant.onmicrosoft.com</uploadUser>
+		<uploadUsers>spmigration1@tenant.onmicrosoft.com,spmigration2@tenant.onmicrosoft.com,spmigration3@tenant.onmicrosoft.com,spmigration4@tenant.onmicrosoft.com</uploadUsers>
 		<uploadPass>pass@word1</uploadPass>
-		
 	</tenant>
-	<maxWorker>1</maxWorker>
+	<maxWorker>2</maxWorker>
 	<notify>
-		<smtp>mailrelay</smtp>
-		<from>sharepoint-no-reply@company.com</from>
+		<smtpServer>mailrelay</smtpServer>
+		<from>migration-no-reply@company.com</from>
+		<to>spteam@company.com</to>
 	</notify>
 	<optionalLimitServers>SPWFE1,SPWFE2</optionalLimitServers>
 	<optionalSchtaskUser>SPSERVICE</optionalSchtaskUser>
