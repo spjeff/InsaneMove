@@ -48,7 +48,6 @@ Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out
 Import-Module Microsoft.Online.SharePoint.PowerShell -ErrorAction SilentlyContinue -WarningAction SilentlyContinue -Prefix M | Out-Null
 Import-Module SharePointPnPPowerShellOnline -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
 
-
 # Config
 $root = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
 [xml]$settings = Get-Content "$root\InsaneMove.xml"
@@ -291,12 +290,12 @@ Function CreateTracker() {
 		})
 		$global:track += $obj
 
-        # Sort by SharePoint site storage (GB) ascending (small sites first)
-        $global:track = $global:track | sort SPStorage
-
 		# Increment ID
 		$i++
 	}
+	
+	# Sort by SharePoint site storage (GB) ascending (small sites first)
+    $global:track = $global:track | sort SPStorage
 	
 	# Display
 	"[SESSION-CreateTracker]"
@@ -497,8 +496,10 @@ Function CopySites() {
 	}
 	
 	$csvCounter = 0
+	$emailCounter = 0
 	do {
 		$csvCounter++
+		$emailCounter++
 		# Get latest Job status
 		UpdateTracker
 		Write-Host "." -NoNewline
@@ -562,27 +563,20 @@ Function CopySites() {
 			
 			$grp = $global:track | group Status
 			$grp | select Count,Name | sort Name | ft -a
-			
-			# Email config
-			$smtpServer = $settings.settings.notify.smtpServer
-			$from = $settings.settings.notify.from
-			$to = $settings.settings.notify.to
-
-			# Progress table
-			# 5 sec space, 12 per min, 15 minute spacing
-            if ($smtpServer -and $to -and $from) {
-                $summary = $grp | select Count,Name | sort Name | Out-String
-                if ($emailCounter -gt (12 * 15)) {
-                    Send-MailMessage -SmtpServer $smtpServer -From $from -To $to -Subject "Copy Site ($prct %) - ETA $eta - $name" -Body "$summary <br/> $wip" -BodyAsHtml
-                    $emailCounter = 0
-                }
-            }
 		}
 		
 		# Write CSV with partial results.  Enables monitoring long runs.
 		if ($csvCounter -gt 5) {
 			WriteCSV
 			$csvCounter = 0
+		}
+		
+		# Progress table
+		# 5 sec space, 12 per min, 15 minute spacing
+		$summary = $grp | select Count,Name | sort Name | Out-String
+		if ($emailCounter -gt (12 * 15)) {
+			EmailSummary
+			$emailCounter = 0
 		}
 
 		# Latest counter
@@ -596,6 +590,24 @@ Function CopySites() {
 	"[TRACK]"
 	$global:track | group status | ft -a
 	$global:track | select CsvID,JobID,SessionID,SGSessionId,PC,SourceURL,DestinationURL | ft -a
+}
+
+Function EmailSummary ($style) {
+	# Email config
+	$smtpServer = $settings.settings.notify.smtpServer
+	$from = $settings.settings.notify.from
+	$to = $settings.settings.notify.to
+
+	# Done
+	if ($style -eq "done") {
+		$body = "--DONE-- " + $body
+	}
+
+	# Send message
+	if ($smtpServer -and $to -and $from) {
+		$summary = $grp | select Count,Name | sort Name | Out-String
+		Send-MailMessage -SmtpServer $smtpServer -From $from -To $to -Subject "Copy Site ($prct %) - ETA $eta - $name" -Body "$summary <br/> $wip" -BodyAsHtml
+	}
 }
 
 Function VerifyCloudSites() {
@@ -666,15 +678,6 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 		}
 	}
 	
-	# Verify User
-     try {
-		$web = Get-PnPWeb $settings.settings.tenant.adminURL
-	    $u = New-PnPUser -Web $web -LoginName $upn -ErrorAction SilentlyContinue
-    } catch {}
-	if (!$u) {
-		$upn = $settings.settings.tenant.adminUser
-	}
-	
 	# Verify Site
 	try {
 		if ($destUrl) {
@@ -732,7 +735,8 @@ Function MeasureSiteCSV {
 		$s = Get-SPSite $row.SourceURL
 		if ($s) {
 			$storage = [Math]::Round($s.Usage.Storage / 1MB, 2)
-            if (!$row.SPStorage) {
+            if (!($row.PSObject.Properties.name -contains "SPStorage")) {
+				# add property SPStorage to collection, if missing
                 $row | Add-Member –MemberType NoteProperty –Name SPStorage –Value ""
             }
 			$row.SPStorage = $storage
@@ -862,6 +866,7 @@ Function Main() {
 				CloseSession
 				CreateWorkers
 				CopySites
+				EmailSummary "done"
 				CloseSession
 				WriteCSV
 			}
@@ -871,15 +876,16 @@ Function Main() {
 	# Finish LOG
 	Write-Host "===== DONE ===== $(Get-Date)" -Fore Yellow
 	$th				= [Math]::Round(((Get-Date) - $start).TotalHours, 2)
-	$attemptMb		= ($global:track |measure SPStorage -Sum).Sum
-	$actualMb		= ($global:track |? {$_.SGSessionId -ne ""} |measure SPStorage -Sum).Sum
+	$attemptMb		= ($global:track | measure SPStorage -Sum).Sum
+	$actualMb		= ($global:track |? {$_.SGSessionId -ne ""} | measure SPStorage -Sum).Sum
 	$actualSites	= ($global:track |? {$_.SGSessionId -ne ""}).Count
 	Write-Host ("Duration Hours              : {0:N2}" -f $th) -Fore Yellow
 	Write-Host ("Total Sites Attempted       : {0}" -f $($global:track.count)) -Fore Green
 	Write-Host ("Total Sites Copied          : {0}" -f $actualSites) -Fore Green
 	Write-Host ("Total Storage Attempted (MB): {0:N0}" -f $attemptMb) -Fore Green
 	Write-Host ("Total Storage Copied (MB)   : {0:N0}" -f $actualMb) -Fore Green
-	Write-Host ("Total Objects               : {0:N0}" -f $(($global:track |measure SGItemsCopied -Sum).Sum)) -Fore Green
+	Write-Host ("Total Objects               : {0:N0}" -f $(($global:track | measure SGItemsCopied -Sum).Sum)) -Fore Green
+	Write-Host ("Total Servers               : {0}" -f $global:servers.Count) -Fore Green
 	Write-Host ("Total Worker Threads        : {0}" -f $maxWorker) -Fore Green
 	Write-Host "====="  -Fore Yellow
 	Write-Host ("GB per Hour                 : {0:N2}" -f (($actualMb/1KB)/$th)) -Fore Green
