@@ -434,6 +434,14 @@ Function ExecuteSiteCopy($row, $worker) {
 	if ($row.MySiteEmail) {
 		# MySite /personal/ = always RENAME
 		$copyparam = "-CopySettings `$csMysite"
+
+		# Set Version History before migration (ShareGate will copy setting to O365)
+		Write-Host "Set Version History 99" -Fore Green
+		$site = Get-SPSite $srcUrl
+		$docLib = $site.RootWeb.Lists["Documents"]
+		$docLib.EnableVersioning = $true
+		$docLib.MajorVersionLimit = 99
+		$docLib.Update()
 	}
 	$uploadUser = $worker.UploadUser
 	$uploadPass = $settings.settings.tenant.uploadPass
