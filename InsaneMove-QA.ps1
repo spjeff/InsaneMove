@@ -12,6 +12,9 @@ param (
 	[string]$fileCSV
 )
 
+$datestamp = (Get-Date).tostring("yyyy-MM-dd-hh-mm-ss")
+Start-Transcript "migratedsites-$datestamp.csv"
+
 # Plugins
 Add-PSSnapin Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null
 Import-Module SharePointPnPPowerShellOnline -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
@@ -22,21 +25,31 @@ Function ReadCSV($fileCSV) {
 
     # DataTable
     $global:dt = New-Object System.Data.DataTable
-    $cols = @("Source","Destination","SourceCount","DestinationCount","MissingDocs")
+    $cols = @("Source","Destination","PersonalSpace","SourceCount","DestinationCount","MissingDocs")
     foreach ($col in $cols) {
         # Add column
         $dt.Columns.Add($col) | Out-Null
     }
+
+    # Create UPM Object
+    $mySiteWebApp = Get-SPWebApplication | ? {$_.Name -like "*MySite*"}
+    $mySite = Get-SPSite $mySiteWebApp.Url
+    $serviceContext = Get-SPServiceContext $mySite
+    $upm = new-object Microsoft.Office.Server.UserProfiles.UserProfileManager($serviceContext)
 
     # Append rows
     foreach ($row in $csv) {
         # Lookup MySite
         $destUrl = FindCloudMySite $row.MySiteEmail
 
+        # Lookup PersonalSpace attribute
+        $personalSpace = FindPersonalSpace $row.MySiteEmail
+				
         # Add Row
         $new = $global:dt.NewRow()
         $new["Source"] = $row.SourceURL
         $new["Destination"] = $destUrl
+        $new["PersonalSpace"] = $personalSpace
         $global:dt.Rows.Add($new)
     }
 }
@@ -46,6 +59,7 @@ Function FindCloudMySite ($MySiteEmail) {
 	$coll = @()
 	$coll += $MySiteEmail
 	$profile = Get-PnPUserProfileProperty -Account $coll
+    
 	if ($profile) {
 		if ($profile.PersonalUrl) {
 			$url = $profile.PersonalUrl.TrimEnd('/')
@@ -55,13 +69,26 @@ Function FindCloudMySite ($MySiteEmail) {
 	return $url
 }
 
+Function FindPersonalSpace ($MySiteEmail) {
+    # Lookup PersonalSpace attribute from MySite profile
+    $uProfile = $upm.GetUserProfile("$MySiteEmail")
+    $personalSpace = $uProfile["personalSpace"].value
+    return $personalSpace
+}
+
 Function InspectSource($url) {
     # Connect MySite
     $site = Get-SPSite $url
     $web = $site.Rootweb
     $list = $web.Lists["Documents"]
-    $c = $list.Items.Count
+    $c = $list.Items.Count + $list.Folders.Count
 
+	Write-Host "`n--------------------------------------------------------------------------------------"
+	Write-Host "--------------------------------------------------------------------------------------"
+	Write-Host "--------------------------------------------------------------------------------------`n"
+	
+	Write-Host "`n MySite: $url `n"
+	
     # Collect file URL detail to Data Table
     $global:mysite = New-Object System.Data.DataTable
     $global:mysite.Columns.Add("File") | Out-Null
@@ -83,6 +110,8 @@ Function InspectDestination($url) {
     $items = Get-PNPListItem -List "Documents" -Fields "FileRef" | %{New-Object PSObject -Property  @{Name = $_["FileRef"]}}
     $c = 0
 
+	Write-Host "`n OneDrive: $url `n"
+		
     # Parse URL for username
     $splits = $url.Split('/', [StringSplitOptions]::RemoveEmptyEntries)
     $user = $splits[$splits.length -1 ].Split('_')[0]
@@ -90,6 +119,7 @@ Function InspectDestination($url) {
     # Collect file URL detail to Data Table
     $global:onedrive = New-Object System.Data.DataTable
     $global:onedrive.Columns.Add("File") | Out-Null
+	
     foreach ($item in $items) {
         $c++
         $new = $global:onedrive.NewRow()
@@ -105,13 +135,15 @@ Function InspectDestination($url) {
 Function CountMissing() {
     # Compare MySite and OneDrive file URLs
     $dv = New-Object System.Data.DataView($global:onedrive)
-    $c = 0
-        
+    $c = 0    
+	Write-Host "********** MISSING DOCS **********"
+	
     # Filter
      foreach ($row in $global:mysite) {
 		# Escape apostrophe within file names
         $file = $row.File.Replace("'","''")
         $dv.RowFilter = "File = '$file'"
+		
         if ($dv.Count -eq 0) {
             Write-Host $file -ForegroundColor Yellow
             $c++
@@ -124,8 +156,8 @@ Function CountMissing() {
 
 Function SaveReport() {
     # Save CSV report
-    $datestamp = (Get-Date).tostring("yyyy-MM-dd-hh-mm-ss")
-	$file = "d:\insanemove\logs\migratedsites-$datestamp.csv"
+    #$datestamp = (Get-Date).tostring("yyyy-MM-dd-hh-mm-ss")
+	$file = "QAReport-migratedsites-$datestamp.csv"
     $global:dt | Export-Csv $file -NoTypeInformation
 	Write-Host "Saved : $file"
 }
@@ -138,6 +170,7 @@ Function Main() {
 	$dt |ft
 	
     foreach ($row in $global:dt.Rows) {
+	
         # Count source files (MySite On-Premise)
         $c = InspectSource $row.Source
         $row["SourceCount"] = $c
@@ -155,3 +188,5 @@ Function Main() {
     SaveReport
 }
 Main
+
+Stop-Transcript
