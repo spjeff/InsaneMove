@@ -412,8 +412,8 @@ Function ExecuteSiteCopy($row, $worker) {
 	Set-MSPOUser -Site $site -LoginName $uploadUser -IsSiteCollectionAdmin $true
 	
 	# PNP
-	Set-PnPTenantSite -Url $destUrl -Owners $adminUser
-	Set-PnPTenantSite -Url $destUrl -Owners $uploadUser
+	Set-PnPTenantSite -Url $destUrl -Owners $adminUser -ErrorAction SilentlyContinue
+	Set-PnPTenantSite -Url $destUrl -Owners $uploadUser -ErrorAction SilentlyContinue
 	
 	# Make NEW Session - remote PowerShell
     $wid = $worker.Id
