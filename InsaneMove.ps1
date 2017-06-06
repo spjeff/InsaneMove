@@ -156,7 +156,7 @@ Function ReadCloudPW() {
 	"<ReadCloudPW>"
 	# Prompt for admin password
 	if ($settings.settings.tenant.adminPass) {
-		$global:cloudPW =$settings.settings.tenant.adminPass
+		$global:cloudPW = $settings.settings.tenant.adminPass
 	} else {
 		$global:cloudPW = Read-Host "Enter O365 Cloud Password for $($settings.settings.tenant.adminUser)"
 	}
