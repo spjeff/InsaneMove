@@ -407,13 +407,12 @@ Function ExecuteSiteCopy($row, $worker) {
 	
 	Set-SPSite -Identity $srcUrl -LockState Unlock
 	
-	# SPO
-	Set-MSPOUser -Site $site -LoginName $adminUser -IsSiteCollectionAdmin $true
-	Set-MSPOUser -Site $site -LoginName $uploadUser -IsSiteCollectionAdmin $true
-	
-	# PNP
-	Set-PnPTenantSite -Url $destUrl -Owners $adminUser -ErrorAction SilentlyContinue
-	Set-PnPTenantSite -Url $destUrl -Owners $uploadUser -ErrorAction SilentlyContinue
+	# SPO - Site Collection Admin
+	Set-MSPOSite -Identity $site -Owner $adminUser -ErrorAction SilentlyContinue
+	Set-MSPOSite -Identity $site -Owner $uploadUser -ErrorAction SilentlyContinue
+
+	Set-MSPOUser -Site $site -LoginName $adminUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
+	Set-MSPOUser -Site $site -LoginName $uploadUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
 	
 	# Make NEW Session - remote PowerShell
     $wid = $worker.Id
