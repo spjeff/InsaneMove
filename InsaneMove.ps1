@@ -156,7 +156,7 @@ Function ReadCloudPW() {
 	"<ReadCloudPW>"
 	# Prompt for admin password
 	if ($settings.settings.tenant.adminPass) {
-		$global:cloudPW = $settings.settings.tenant.adminPass
+		$global:cloudPW =$settings.settings.tenant.adminPass
 	} else {
 		$global:cloudPW = Read-Host "Enter O365 Cloud Password for $($settings.settings.tenant.adminUser)"
 	}
@@ -405,14 +405,17 @@ Function ExecuteSiteCopy($row, $worker) {
 	
 	# Grant SCA
 	$adminUser = $settings.settings.tenant.adminUser
+	$adminRole = $settings.settings.tenant.adminRole
 	$uploadUser = $worker.UploadUser
 	Write-Host "Grant SCA $upn to $destUrl" -Fore Green
-	$site = Get-MSPOSite $destUrl
 	
+	# Unlock site collection
+	$site = Get-MSPOSite $destUrl
 	Set-SPSite -Identity $srcUrl -LockState Unlock
 	
 	# SPO - Site Collection Admin
 	Set-MSPOUser -Site $site -LoginName $adminUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
+	Set-MSPOUser -Site $site -LoginName $adminRole -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
 	Set-MSPOUser -Site $site -LoginName $uploadUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
 	
 	# Make NEW Session - remote PowerShell
@@ -449,7 +452,7 @@ Function ExecuteSiteCopy($row, $worker) {
 	$ps = "Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null`n`$pw='$uploadPass';md ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$runAsUser-$now.log"";`n""uploadUser=$uploadUser"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;
 	`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;
 	`$cred = New-Object System.Management.Automation.PSCredential (""$uploadUser"", `$secpw);
-	;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
+	;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
 	# Dry run
 	if ($dryRun) {
 		$ps = $ps.Replace("Copy-Site","NoCopy-Site")
@@ -679,7 +682,8 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 	if ($srcUrl) {
 		$web = (Get-SPSite $srcUrl).RootWeb
 		if ($web.RequestAccessEmail) {
-			$upn = $web.RequestAccessEmail.Split(",;")[0].Split("@")[0] + "@" + $settings.settings.tenant.suffix;
+			#REM $upn = $web.RequestAccessEmail.Split(",;")[0].Split("@")[0] + "@fanniemae.com"; #REM + $settings.settings.tenant.suffix;
+			$upn = $settings.settings.tenant.adminUser
 		}
 		if (!$upn) {
 			$upn = $settings.settings.tenant.adminUser
@@ -731,9 +735,11 @@ Function ConnectCloud {
 	$c = New-Object System.Management.Automation.PSCredential ($settings.settings.tenant.adminUser, $secpw)
 	
 	# Connect PNP
-	Connect-PnpOnline -URL $settings.settings.tenant.adminURL -Credential $c
-	Connect-MSPOService -URL $settings.settings.tenant.adminURL -Credential $c
-}
+	#Connect-PnpOnline -URL $settings.settings.tenant.adminURL -Credential $c
+	#Connect-MSPOService -URL $settings.settings.tenant.adminURL -Credential $c
+	Connect-PnpOnline -URL https://fnma-admin.sharepoint.com -Credential $c
+	Connect-MSPOService -URL https://fnma-admin.sharepoint.com -Credential $c
+	}
 
 Function MeasureSiteCSV {
 	"<MeasureSiteCSV>"
