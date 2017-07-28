@@ -38,15 +38,20 @@ param (
 	[Alias("ups")]
 	[switch]$userProfileSetHybridURL = $false,
 	
-	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Dry run replaces core "Copy-Site" with "CCopy-Site" to execute all queueing but not transfer any data.')]
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Dry run replaces core "Copy-Site" with "NoCopy-Site" to execute all queueing but not transfer any data.')]
 	[Alias("d")]
-	[switch]$dryRun = $false
+	[switch]$dryRun = $false,
+
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Clean servers to preprae for next migration batch.')]
+	[Alias("c")]
+	[switch]$clean = $false
 )
 
 # Plugin
 Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null
 Import-Module Microsoft.Online.SharePoint.PowerShell -ErrorAction SilentlyContinue -WarningAction SilentlyContinue -Prefix M | Out-Null
 Import-Module SharePointPnPPowerShellOnline -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
+Import-Module CredentialManager -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
 
 # Config
 $root = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
@@ -236,8 +241,11 @@ $cmdTemplate = $cmdTemplate.replace("[RUNASDOMAIN]", $env:userdomain)
 			$uploadUsers = $settings.settings.tenant.uploadUsers.Split(",")
 			
             # track worker
-			$obj = New-Object -TypeName PSObject -Prop (@{"Id"=$wid;"PC"=$pc;"RunAsUser"=$runAsUser;"UploadUser"=$uploadUsers[$wid]})
-			$global:workers += $obj
+			$worker = New-Object -TypeName PSObject -Prop (@{"Id"=$wid;"PC"=$pc;"RunAsUser"=$runAsUser;"UploadUser"=$uploadUsers[$wid]})
+			$global:workers += $worker
+
+			# Windows - Credential Manager
+			New-StoredCredential -Target "InsaneMove-$runAsUser" -UserName $runAsUser -Password $runAsPass -Persist LocalMachine
 			
 			# Increment counters
 			$wid++
@@ -452,7 +460,7 @@ Function ExecuteSiteCopy($row, $worker) {
 	$ps = "Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null`n`$pw='$uploadPass';md ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$runAsUser-$now.log"";`n""uploadUser=$uploadUser"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;
 	`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;
 	`$cred = New-Object System.Management.Automation.PSCredential (""$uploadUser"", `$secpw);
-	;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
+	;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n# READ ONLY - Cred current user`n`$rouser = `$env:userdomain + ""\"" + `$env:username`n`$rocred = Get-StoredCredential |? {`$_.UserName -eq `$rouser}`n# READ ONLY - Open PS Session`n`$rosess = New-PSSession -ComputerName `$env:computername -Credential `$rocred -Authentication Credssp`n# READ ONLY - Invoke Delay`n`$rocmd = ""Add-PSSnapin Microsoft.SharePoint.PowerShell`nSleep (5*60)`nSet-SPSite '$srcUrl' -LockState ReadOnly""`n`$rosb = [Scriptblock]::Create(`$rocmd)`n`$rojob = Invoke-Command -ScriptBlock `$rosb -Session `$rosess -AsJob`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
 	# Dry run
 	if ($dryRun) {
 		$ps = $ps.Replace("Copy-Site","NoCopy-Site")
@@ -610,10 +618,13 @@ Function EmailSummary ($style) {
 	$to = $settings.settings.notify.to
 
 	# Done
+	if (!$prct) {$style = "done"}
 	if ($style -eq "done") {
-		$body = "--DONE-- " + $body
+		$prct = "100"
+		$eta = "done"
+		$summary = "--DONE-- "
 	}
-
+	
 	# Send message
 	if ($smtpServer -and $to -and $from) {
 		$summary = $grp | select Count,Name | sort Name | Out-String
@@ -642,7 +653,9 @@ Function VerifyCloudSites() {
 	}
 	
 	# Execute creation of OneDrive /personal/ sites in batches (200 each) https://technet.microsoft.com/en-us/library/dn792367.aspx
-	Write-Host " - PROCESS MySite bulk creation"
+	if ($global:collMySiteEmail) {
+		Write-Host " - PROCESS MySite bulk creation"
+	}
 	$i = 0
 	$batch = @()
 	foreach ($MySiteEmail in $global:collMySiteEmail) {
@@ -818,8 +831,59 @@ Function UserProfileSetHybridURL() {
 	}
 }
 
+Function Clean() {
+	Write-Host "<Clean>"
+	DetectVendor
+	foreach ($server in $global:servers) {
+		# File system
+		Write-Host " - File system"
+		$pc = $server
+		Remove-Item "\\$pc\d$\insanemove\worker*.*" -Confirm:$false -Force
+
+		# User accounts
+		$runasuser = @()
+		$runasuser += $env:username
+		if ($settings.settings.optionalSchtaskUser) {
+			$runasuser += $settings.settings.optionalSchtaskUser
+		}
+
+		# Scheduled Task
+		Write-Host " - Scheduled Task"
+		1..$settings.maxWorker |% {
+			$i = $_
+			foreach ($user in $runasuser) {
+				$taskname = "worker1-[RUNASUSER]"
+				$taskname = $taskname.Replace("1", $i).Replace("[RUNASUSER]", $user)
+				$cmd = "schtasks.exe /delete /s $pc /tn $taskname /F"
+				Invoke-Expression $cmd
+			}
+		}
+
+		# Stop ShareGate EXE running
+		Write-Host " - ShareGate EXE Running"
+		$proc = Get-WmiObject Win32_Process -ComputerName $server |? {$_.ProcessName -match "Sharegate"}
+		$proc |% {$_.Terminate()}
+
+		# ShareGate Application Cache
+		Write-Host " - ShareGate Application Cache"
+		foreach ($user in $runasuser) {
+			$folder = "C:\Users\[USER]\AppData\Local\Sharegate\ApplicationLogs".Replace("[USER]", $user)
+			$folder
+			Remove-Item $folder -Confirm:$false -Recurse -Force -ErrorAction SilentlyContinue
+			$folder = "C:\Users\[USER]\AppData\Local\Sharegate\Sharegate.Migration.txt".Replace("[USER]", $user)
+			$folder
+			Remove-Item $folder -Confirm:$false -Force -ErrorAction SilentlyContinue
+		}
+	}
+}
 Function Main() {
 	"<Main>"
+	# Clean
+	if ($clean) {
+		Clean
+		Exit
+	}
+
 	# Start LOG
 	$start = Get-Date
 	$when = $start.ToString("yyyy-MM-dd-hh-mm-ss")
