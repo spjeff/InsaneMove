@@ -263,6 +263,7 @@ Function PrepareCloudUrl($destUrl) {
 	# parse pre/post that go before/after managed path
 	$pre = $destUrl.Substring(0, $destEndChar - $managedPath.length)
 	$post = $destUrl.Substring($destEndChar+7, $destUrl.length-7-$destEndChar)
+	$pre = $pre.Replace("http://sharepoint","https://tenant.sharepoint.com")
 
 	# return final URL
 	return $pre + "sites/" + $managedPath + "-" + $post
