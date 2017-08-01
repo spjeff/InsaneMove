@@ -44,7 +44,11 @@ param (
 
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Clean servers to preprae for next migration batch.')]
 	[Alias("c")]
-	[switch]$clean = $false
+	[switch]$clean = $false,
+
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Delete source SharePoint sites on-premise.')]
+	[Alias("del")]
+	[switch]$delete = $false
 )
 
 # Plugin
@@ -58,6 +62,14 @@ $root = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
 [xml]$settings = Get-Content "$root\InsaneMove.xml"
 "$root\InsaneMove.xml"
 $maxWorker = $settings.settings.maxWorker
+
+Function DeleteSourceSites() {
+	$sites = Import-CSV $fileCSV
+	foreach ($s in $sites) {
+		Write-Host "Delete source site $($s.SourceURL)"
+		Remove-SPSite $s.SourceURL -Confirm:$false
+	}
+}
 
 Function VerifyPSRemoting() {
 	"<VerifyPSRemoting>"
@@ -483,12 +495,9 @@ Function ExecuteSiteCopy($row, $worker) {
 	$ps = "Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null`n`$pw='$uploadPass';md ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$runAsUser-$now.log"";`n""uploadUser=$uploadUser"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;
 	`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;
 	`$cred = New-Object System.Management.Automation.PSCredential (""$uploadUser"", `$secpw);
-	;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
-    #OLD ;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n# READ ONLY - Cred current user`n`$rouser = `$env:userdomain + ""\"" + `$env:username`n`$rocred = Get-StoredCredential |? {`$_.UserName -eq `$rouser}`n# READ ONLY - Open PS Session`n`$rosess = New-PSSession -ComputerName `$env:computername -Credential `$rocred -Authentication Credssp`n# READ ONLY - Invoke Delay`n`$rocmd = ""Add-PSSnapin Microsoft.SharePoint.PowerShell`nSleep (5*60)`nSet-SPSite '$srcUrl' -LockState ReadOnly""`n`$rosb = [Scriptblock]::Create(`$rocmd)`n`$rojob = Invoke-Command -ScriptBlock `$rosb -Session `$rosess -AsJob`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
-    # READ ONLY
-    # n# READ ONLY - Cred current user`n`$rouser = `$env:userdomain + ""\"" + `$env:username`n`$rocred = Get-StoredCredential |? {`$_.UserName -eq `$rouser}`n# READ ONLY - Open PS Session`n`$rosess = New-PSSession -ComputerName `$env:computername -Credential `$rocred -Authentication Credssp`n# READ ONLY - Invoke Delay`n`$rocmd = ""Add-PSSnapin Microsoft.SharePoint.PowerShell`nSleep (5*60)`nSet-SPSite '$srcUrl' -LockState ReadOnly""`n`$rosb = [Scriptblock]::Create(`$rocmd)`n`$rojob = Invoke-Command -ScriptBlock `$rosb -Session `$rosess -AsJob`
-
-
+	`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n# READ ONLY - Cred current user`n`$rouser = `$env:username`n`$rocred = Get-StoredCredential |? {`$_.UserName -eq `$rouser}`n# READ ONLY - Open PS Session`n`$rosess = New-PSSession -ComputerName `$env:computername -Credential `$rocred -Authentication Credssp`n# READ ONLY - Invoke Delay`n`$rocmd = ""Add-PSSnapin Microsoft.SharePoint.PowerShell`nSleep (5*60)`nSet-SPSite '$srcUrl' -LockState ReadOnly""`n`$rosb = [Scriptblock]::Create(`$rocmd)`n`$rojob = Invoke-Command -ScriptBlock `$rosb -Session `$rosess -AsJob`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
+	
+	# OLD;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
 
 	# Dry run
 	if ($dryRun) {
@@ -748,10 +757,12 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 			$global:collMySiteEmail += $MySiteEmail
 		} else {
 			# Provision TEAMSITE
-			$quota = 1024*50
+			$sourceSite = Get-SPSite $srcUrl
+			$quota = $sourceSite.Quota.StorageMaximumLevel / 1MB
+			$quotaWarn = $quota * 0.90
 			$splits = $destUrl.split("/")
 			$title = $splits[$splits.length-1]
-			New-PnPTenantSite -Owner $upn -Url $destUrl -StorageQuota $quota -Title $title -TimeZone 10
+			New-PnPTenantSite -Owner $upn -Url $destUrl -StorageQuota $quota -StorageQuotaWarningLevel $quotaWarn -Title $title -TimeZone 10
 		}
 	} else {
 		Write-Host "- FOUND $destUrl"
@@ -909,6 +920,13 @@ Function Clean() {
 }
 Function Main() {
 	"<Main>"
+	
+	# Delete source SPSites
+	if ($delete) {
+		DeleteSourceSites
+		Exit
+	}
+	
 	# Clean
 	if ($clean) {
 		Clean
