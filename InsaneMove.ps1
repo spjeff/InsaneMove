@@ -47,13 +47,17 @@ param (
 	[switch]$clean = $false,
 
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Delete source SharePoint sites on-premise.')]
-	[Alias("del")]
-	[switch]$delete = $false
+	[Alias("ds")]
+	[switch]$deleteSource = $false,
+
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Delete destination SharePoint sites in cloud.')]
+	[Alias("dd")]
+	[switch]$deleteDest = $false
 )
 
 # Plugin
 Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null
-Import-Module Microsoft.Online.SharePoint.PowerShell -ErrorAction SilentlyContinue -WarningAction SilentlyContinue -Prefix M | Out-Null
+Import-Module Microsoft.Online.SharePoint.PowerShell -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
 Import-Module SharePointPnPPowerShellOnline -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
 Import-Module CredentialManager -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
 
@@ -68,6 +72,15 @@ Function DeleteSourceSites() {
 	foreach ($s in $sites) {
 		Write-Host "Delete source site $($s.SourceURL)"
 		Remove-SPSite $s.SourceURL -Confirm:$false
+	}
+}
+
+Function DeleteDestinationSites() {
+	$sites = Import-CSV $fileCSV
+	foreach ($s in $sites) {
+		$u = FormatCloudMP $s.DestinationURL
+		Write-Host "Delete destination site $u"
+		Remove-PnPTenantSite $u -Confirm:$false -Force
 	}
 }
 
@@ -267,20 +280,6 @@ $cmdTemplate = $cmdTemplate.replace("[RUNASDOMAIN]", $env:userdomain)
 	$global:workers | ft -a
 }
 
-Function PrepareCloudUrl($destUrl) {
-	# find managed path
-	$destEndChar = $destUrl.IndexOf("-sites/")
-	$managedPath = $destUrl.Substring(0,$destEndChar).Split("/")[-1]
-
-	# parse pre/post that go before/after managed path
-	$pre = $destUrl.Substring(0, $destEndChar - $managedPath.length)
-	$post = $destUrl.Substring($destEndChar+7, $destUrl.length-7-$destEndChar)
-	$pre = $pre.Replace("http://sharepoint","https://tenant.sharepoint.com")
-
-	# return final URL
-	return $pre + "sites/" + $managedPath + "-" + $post
-}
-
 Function CreateTracker() {
 	"<CreateTracker>"
 	# CSV migration source/destination URL
@@ -302,13 +301,7 @@ Function CreateTracker() {
 		if ($row.MySiteEmail) {
 			$destUrl = FindCloudMySite $row.MySiteEmail
 		} else {
-			$destUrl = $row.DestinationURL;
-			$destEndChar = $destUrl.IndexOf("-sites/")
-
-			# adjust destination URL
-			if ($destUrl.contains("-sites")) {
-				$destUrl = PrepareCloudUrl $destUrl
-			}
+			$destUrl = FormatCloudMP $row.DestinationURL;
 		}
 
 		# Add row
@@ -331,9 +324,10 @@ Function CreateTracker() {
 			"Error"="";
 			"ErrorCount"="";
 			"TaskXML"="";
-			"SPStorage"=$SPStorage;
+			"SPStorageMB"=$SPStorage;
 			"TimeCopyStart"="";
-			"TimeCopyEnd"=""
+			"TimeCopyEnd"="";
+			"Durationhours"=""
 		})
 		$global:track += $obj
 
@@ -342,7 +336,7 @@ Function CreateTracker() {
 	}
 	
 	# Sort by SharePoint site storage (GB) ascending (small sites first)
-    $global:track = $global:track | sort SPStorage
+    $global:track = $global:track | sort SPStorageMB
 	
 	# Display
 	"[SESSION-CreateTracker]"
@@ -394,6 +388,7 @@ Function UpdateTracker () {
 				# Completed
 				$row.Status = "Completed"
 				$row.TimeCopyEnd = (Get-Date).ToString()
+				$row.Durationhours = ([datetime]($row.TimeCopyEnd) - [datetime]($row.TimeCopyStart)).TotalHours
 				
 				# Do we have ShareGate XML?
 				$resultfile = "\\$pc\d$\insanemove\worker$wid-$runAsUser.xml"
@@ -453,13 +448,13 @@ Function ExecuteSiteCopy($row, $worker) {
 	Write-Host "Grant SCA $upn to $destUrl" -Fore Green
 	
 	# Unlock site collection
-	$site = Get-MSPOSite $destUrl
+	$site = Get-SPOSite $destUrl
 	Set-SPSite -Identity $srcUrl -LockState Unlock
 	
 	# SPO - Site Collection Admin
-	Set-MSPOUser -Site $site -LoginName $adminUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
-	Set-MSPOUser -Site $site -LoginName $adminRole -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
-	Set-MSPOUser -Site $site -LoginName $uploadUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
+	Set-SPOUser -Site $site -LoginName $adminUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
+	Set-SPOUser -Site $site -LoginName $adminRole -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
+	Set-SPOUser -Site $site -LoginName $uploadUser -IsSiteCollectionAdmin $true -ErrorAction SilentlyContinue
 	
 	# Make NEW Session - remote PowerShell
     $wid = $worker.Id
@@ -495,7 +490,7 @@ Function ExecuteSiteCopy($row, $worker) {
 	$ps = "Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null`n`$pw='$uploadPass';md ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$runAsUser-$now.log"";`n""uploadUser=$uploadUser"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;
 	`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;
 	`$cred = New-Object System.Management.Automation.PSCredential (""$uploadUser"", `$secpw);
-	`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n# READ ONLY - Cred current user`n`$rouser = `$env:username`n`$rocred = Get-StoredCredential |? {`$_.UserName -eq `$rouser}`n# READ ONLY - Open PS Session`n`$rosess = New-PSSession -ComputerName `$env:computername -Credential `$rocred -Authentication Credssp`n# READ ONLY - Invoke Delay`n`$rocmd = ""Add-PSSnapin Microsoft.SharePoint.PowerShell`nSleep (5*60)`nSet-SPSite '$srcUrl' -LockState ReadOnly""`n`$rosb = [Scriptblock]::Create(`$rocmd)`n`$rojob = Invoke-Command -ScriptBlock `$rosb -Session `$rosess -AsJob`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
+	`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n# READ ONLY - Cred current user`n`$rouser = `$env:username`n`$rocred = Get-StoredCredential |? {`$_.UserName -eq `$rouser}`n# READ ONLY - Open PS Session`n`$rosess = New-PSSession -ComputerName `$env:computername -Credential `$rocred -Authentication Credssp`n# READ ONLY - Invoke Delay`n`$rocmd = ""Add-PSSnapin Microsoft.SharePoint.PowerShell`nSleep (5*60)`nSet-SPSite '$srcUrl' -LockState Unlock""`n`$rosb = [Scriptblock]::Create(`$rocmd)`n`$rojob = Invoke-Command -ScriptBlock `$rosb -Session `$rosess -AsJob`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
 	
 	# OLD;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
 
@@ -537,7 +532,7 @@ Function WriteCSV() {
 	"<WriteCSV>"
     # Write new CSV output with detailed results
     $file = $fileCSV.Replace(".csv", "-results.csv")
-    $global:track | Select SourceURL,DestinationURL,MySiteEmail,CsvID,WorkerID,PC,RunAsUser,Status,SGResult,SGServer,SGSessionId,SGSiteObjectsCopied,SGItemsCopied,SGWarnings,SGErrors,Error,ErrorCount,TaskXML,SPStorage | Export-Csv $file -NoTypeInformation -Force -ErrorAction Continue
+    $global:track | Select SourceURL,DestinationURL,MySiteEmail,CsvID,WorkerID,PC,RunAsUser,Status,SGResult,SGServer,SGSessionId,SGSiteObjectsCopied,SGItemsCopied,SGWarnings,SGErrors,Error,ErrorCount,TaskXML,SPStorageMB,TimeCopyStart,TimeCopyEnd,Durationhours | Export-Csv $file -NoTypeInformation -Force -ErrorAction Continue
 }
 
 Function CopySites() {
@@ -589,6 +584,9 @@ Function CopySites() {
 					# Display
 					$row |ft -a
 
+					# Check in Files
+					CheckInDocs $row.SourceURL					
+
                     # Kick off copy
 					Start-Sleep 5
 					"sleep 5 sec..."
@@ -601,6 +599,7 @@ Function CopySites() {
 			# Progress bar %
 			$complete = ($global:track |? {$_.Status -eq "Completed"}).Count
 			$total = $global:track.Count
+			if (!$total) {$total = 1}
 			$prct = [Math]::Round(($complete/$total)*100)
 			
 			# ETA
@@ -621,6 +620,7 @@ Function CopySites() {
 			
 			$grp = $global:track | group Status
 			$grp | select Count,Name | sort Name | ft -a
+			Write-Host (Get-Date)
 		}
 		
 		# Write CSV with partial results.  Enables monitoring long runs.
@@ -735,7 +735,6 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 		$site = Get-SPSite $srcUrl
 		$web = $site.RootWeb
 		if ($web.RequestAccessEmail) {
-			#REM $upn = $web.RequestAccessEmail.Split(",;")[0].Split("@")[0] + "@fanniemae.com"; #REM + $settings.settings.tenant.suffix;
 			$upn = $settings.settings.tenant.adminUser
 		}
 		if (!$upn) {
@@ -762,7 +761,27 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 			$quotaWarn = $quota * 0.90
 			$splits = $destUrl.split("/")
 			$title = $splits[$splits.length-1]
+			Write-Host "New-PnPTenantSite"
+			Write-Host "Source URL: $srcUrl"
+			Write-Host "Quota (MB): $quota"
+			Write-Host "Quota Warn (90%): $quotaWarn"
+
+			# Create site
+			Write-Host "Creating site collection $destUrl"
 			New-PnPTenantSite -Owner $upn -Url $destUrl -StorageQuota $quota -StorageQuotaWarningLevel $quotaWarn -Title $title -TimeZone 10
+
+			# Wait for site online
+			$i = 0
+			do {
+				$site = Get-SPOSite $destUrl
+				Start-Sleep 2
+				Write-Host "." -NoNewline
+				$i++
+			} while (!$site -and ($i -lt 15))
+		
+			# Appy storage warning
+			Set-SPOSite $destUrl -StorageQuotaWarningLevel $quotaWarn
+			Get-SPOSite $destUrl | select Storage* | fl
 		}
 	} else {
 		Write-Host "- FOUND $destUrl"
@@ -790,10 +809,8 @@ Function ConnectCloud {
 	$c = New-Object System.Management.Automation.PSCredential ($settings.settings.tenant.adminUser, $secpw)
 	
 	# Connect PNP
-	#Connect-PnpOnline -URL $settings.settings.tenant.adminURL -Credential $c
-	#Connect-MSPOService -URL $settings.settings.tenant.adminURL -Credential $c
-	Connect-PnpOnline -URL https://fnma-admin.sharepoint.com -Credential $c
-	Connect-MSPOService -URL https://fnma-admin.sharepoint.com -Credential $c
+	Connect-PnpOnline -URL $settings.settings.tenant.adminURL -Credential $c
+	Connect-MSPOService -URL $settings.settings.tenant.adminURL -Credential $c
 	}
 
 Function MeasureSiteCSV {
@@ -804,11 +821,11 @@ Function MeasureSiteCSV {
 		$s = Get-SPSite $row.SourceURL
 		if ($s) {
 			$storage = [Math]::Round($s.Usage.Storage / 1MB, 2)
-            if (!($row.PSObject.Properties.name -contains "SPStorage")) {
-				# add property SPStorage to collection, if missing
-                $row | Add-Member –MemberType NoteProperty –Name SPStorage –Value ""
+            if (!($row.PSObject.Properties.name -contains "SPStorageMB")) {
+				# add property SPStorageMB to collection, if missing
+                $row | Add-Member –MemberType NoteProperty –Name SPStorageMB –Value ""
             }
-			$row.SPStorage = $storage
+			$row.SPStorageMB = $storage
 		}
 	}
 	$csv | Export-Csv $fileCSV -Force -NoTypeInformation
@@ -918,12 +935,40 @@ Function Clean() {
 		}
 	}
 }
+
+Function CheckInDocs ($url) {
+    $site = Get-SPSite $url
+    
+    foreach($web in $site.AllWebs) {
+        
+        foreach($list in $web.GetListsOfType([Microsoft.SharePoint.SPBaseType]::DocumentLibrary)) {
+            $list.CheckedOutFiles | % { if ($_) {$_.TakeOverCheckOut() }}
+
+            $list.CheckedOutFiles | % {
+				$item = $list.GetItemById($_.ListItemId)
+				if ($item.File) {
+					$item.File.CheckIn("File checked in by administrator")
+					Write-Host $item.File.ServerRelativeUrl -NoNewline; 
+					Write-Host " Checked in " -ForegroundColor Green
+				}
+            }
+        }
+        $web.dispose();
+    }
+    $site.dispose();
+}
 Function Main() {
 	"<Main>"
 	
 	# Delete source SPSites
-	if ($delete) {
+	if ($deleteSource) {
 		DeleteSourceSites
+		Exit
+	}
+
+	# Delete destination SPSites
+	if ($deleteDest) {
+		DeleteDestinationSites
 		Exit
 	}
 	
@@ -945,6 +990,8 @@ Function Main() {
 		Start-Transcript $logFile
 	}
 	Write-Host "fileCSV = $fileCSV"
+
+	 
 
 	# Core logic
 	if ($userProfileSetHybridURL) {
@@ -1003,8 +1050,8 @@ Function Main() {
 	# Finish LOG
 	Write-Host "===== DONE ===== $(Get-Date)" -Fore Yellow
 	$th				= [Math]::Round(((Get-Date) - $start).TotalHours, 2)
-	$attemptMb		= ($global:track | measure SPStorage -Sum).Sum
-	$actualMb		= ($global:track |? {$_.SGSessionId -ne ""} | measure SPStorage -Sum).Sum
+	$attemptMb		= ($global:track | measure SPStorageMB -Sum).Sum
+	$actualMb		= ($global:track |? {$_.SGSessionId -ne ""} | measure SPStorageMB -Sum).Sum
 	$actualSites	= ($global:track |? {$_.SGSessionId -ne ""}).Count
 	Write-Host ("Duration Hours              : {0:N2}" -f $th) -Fore Yellow
 	Write-Host ("Total Sites Attempted       : {0}" -f $($global:track.count)) -Fore Green
