@@ -36,7 +36,7 @@ param (
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Update local User Profile Service with cloud personal URL.  Helps with Hybrid Onedrive audience rules.  Need to recompile audiences after running this.')]
 	[Alias("ups")]
-	[switch]$userProfileSetHybridURL = $false,
+	[switch]$userProfile = $false,
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Dry run replaces core "Copy-Site" with "NoCopy-Site" to execute all queueing but not transfer any data.')]
 	[Alias("d")]
@@ -56,7 +56,11 @@ param (
 
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Compare source and destination lists for QA check.')]
 	[Alias("qa")]
-	[switch]$qualityAssurance = $false
+	[switch]$qualityAssurance = $false,
+	
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Copy sites to Office 365.  Main method.')]
+	[Alias("mig")]
+	[switch]$migrate = $false
 )
 
 # Plugin
@@ -68,7 +72,6 @@ Import-Module CredentialManager -ErrorAction SilentlyContinue -WarningAction Sil
 # Config
 $root = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
 [xml]$settings = Get-Content "$root\InsaneMove.xml"
-"$root\InsaneMove.xml"
 $maxWorker = $settings.settings.maxWorker
 
 # Quality Assurance
@@ -114,7 +117,7 @@ Function InspectSource($url) {
 
 Function InspectDestination($url) {
     # Connect to destination
-    Connect-PnPOnline -Url $url -Credentials $global:cred | Out-Null
+    Connect-PnPOnline -Url $url -Credentials $global:cloudcred | Out-Null
 	
 	# Open web and lists
     $rootLists = Get-PnPList
@@ -374,7 +377,7 @@ Function ReadIISPW {
 	} 
 	$sec = $pass | ConvertTo-SecureString -AsPlainText -Force
 	$global:pass = $pass
-	$global:cred = New-Object System.Management.Automation.PSCredential -ArgumentList "$userdomain\$username", $sec
+	$global:farmcred = New-Object System.Management.Automation.PSCredential -ArgumentList "$userdomain\$username", $sec
 }
 
 Function DetectVendor() {
@@ -457,7 +460,8 @@ $cmdTemplate = $cmdTemplate.replace("[RUNASDOMAIN]", $env:userdomain)
 	
 	foreach ($pc in $global:servers) {
 		# Loop maximum worker
-		$s = New-PSSession -ComputerName $pc -Credential $global:cred -Authentication CredSSP -ErrorAction SilentlyContinue
+		write-host -fore cyan "new session $pc"
+		$s = New-PSSession -ComputerName $pc -Credential $global:farmcred -Authentication CredSSP # -ErrorAction SilentlyContinue
         $s
         1..$maxWorker |% {
 			# Optional - run odd SCHTASK (1,3,5...) as different account 
@@ -590,12 +594,12 @@ Function UpdateTracker () {
 			if ($broken -is [array]) {
 				# Multiple
 				foreach ($brokenCurrent in $broken) {
-					New-PSSession -ComputerName $brokenCurrent.ComputerName -Credential $global:cred -Authentication CredSSP -ErrorAction SilentlyContinue
+					New-PSSession -ComputerName $brokenCurrent.ComputerName -Credential $global:farmcred -Authentication CredSSP -ErrorAction SilentlyContinue
 					$brokenCurrent | Remove-PSSession
 				}
 			} else {
 				# Single
-				New-PSSession -ComputerName $broken.ComputerName -Credential $global:cred -Authentication CredSSP -ErrorAction SilentlyContinue
+				New-PSSession -ComputerName $broken.ComputerName -Credential $global:farmcred -Authentication CredSSP -ErrorAction SilentlyContinue
 				$broken | Remove-PSSession
 			}
 		}
@@ -1037,11 +1041,11 @@ Function ConnectCloud {
 	$pw = $global:cloudPW
 	$settings.settings.tenant.adminUser
 	$secpw = ConvertTo-SecureString -String $pw -AsPlainText -Force
-	$global:cred = New-Object System.Management.Automation.PSCredential ($settings.settings.tenant.adminUser, $secpw)
+	$global:cloudcred = New-Object System.Management.Automation.PSCredential ($settings.settings.tenant.adminUser, $secpw)
 	
 	# Connect PNP
-	Connect-PnpOnline -URL $settings.settings.tenant.adminURL -Credential $global:cred
-	Connect-SPOService -URL $settings.settings.tenant.adminURL -Credential $global:cred
+	Connect-PnpOnline -URL $settings.settings.tenant.adminURL -Credential $global:cloudcred
+	Connect-SPOService -URL $settings.settings.tenant.adminURL -Credential $global:cloudcred
 }
 
 Function MeasureSiteCSV {
@@ -1215,9 +1219,23 @@ Function SummaryFooter() {
 	}
 	Write-Host $fileCSV
 }
-Function Main() {
-	"<Main>"
-	
+
+Function NewLog() {
+	# Start LOG
+	$start = Get-Date
+	$when = $start.ToString("yyyy-MM-dd-hh-mm-ss")
+	$logFile = "$root\log\InsaneMove-$when.txt"
+	mkdir "$root\log" -ErrorAction SilentlyContinue | Out-Null
+	if (!$psISE) {
+		try {
+			Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
+		} catch {}
+		Start-Transcript $logFile
+	}
+	Write-Host "fileCSV = $fileCSV"
+}
+
+Function Main() {	
 	# Delete source SPSites
 	if ($deleteSource) {
 		DeleteSourceSites
@@ -1236,76 +1254,101 @@ Function Main() {
 		Exit
 	}
 
-	# Start LOG
-	$start = Get-Date
-	$when = $start.ToString("yyyy-MM-dd-hh-mm-ss")
-	$logFile = "$root\log\InsaneMove-$when.txt"
-	mkdir "$root\log" -ErrorAction SilentlyContinue | Out-Null
-	if (!$psISE) {
-		try {
-			Stop-Transcript -ErrorAction SilentlyContinue | Out-Null
-		} catch {}
-		Start-Transcript $logFile
-	}
-	Write-Host "fileCSV = $fileCSV"
-
 	# Core logic
-	if ($userProfileSetHybridURL) {
+	if ($userProfile) {
 		# Update local user profiles.  Set Personal site URL for Hybrid OneDrive audience compilation and redirect
+		NewLog
 		ReadCloudPW
 		ConnectCloud
 		UserProfileSetHybridURL
 		CompileAudiences
 	} elseif ($measure) {
 		# Populate CSV with size (GB)
+		NewLog
 		MeasureSiteCSV
 	} elseif ($readOnly) {
 		# Lock on-prem sites
+		NewLog
 		LockSite "ReadOnly"
 	} elseif ($readWrite) {
 		# Unlock on-prem sites
+		NewLog
 		LockSite "Unlock"
 	} elseif ($noAccess) {
 		# NoAccess on-prem sites
+		NewLog
 		LockSite "NoAccess"	
 	} elseif ($verifyCloudSites) {
 		# Create site collection
+		NewLog
 		ReadCloudPW
 		ConnectCloud
 		VerifyCloudSites
 	} elseif ($qualityAssurance) {
 		# Run QA check
+		NewLog
 		ReadCloudPW
 		ConnectCloud
 		QualityAssurance | Out-Null
 	} else {
-		if (!$dryRun) {
-			# Prompt to verify
-			$continue = $false
-			Write-Host "Do you want to continue? (Y/N)" -Fore Yellow
-			$choice = Read-Host
-			if ($choice -like "y*") {
-				$continue = $true
-			} else {
-				Write-Host "HALT - User did not confirm data copy." -Fore Red
+		if ($migrate) {
+			if (!$dryRun) {
+				# Prompt to verify
+				$continue = $false
+				Write-Host "Do you want to continue? (Y/N)" -Fore Yellow
+				$choice = Read-Host
+				if ($choice -like "y*") {
+					$continue = $true
+				} else {
+					Write-Host "HALT - User did not confirm data copy." -Fore Red
+				}
 			}
-		}
-		if ($dryRun -or $continue) {
-			# Copy site content
-			VerifyPSRemoting
-			ReadIISPW
-			ReadCloudPW
-			ConnectCloud
-			DetectVendor
-			CloseSession
-			CreateWorkers
-			CopySites
-			EmailSummary "done"
-			CloseSession
-			SaveMigrationCSV
-			SummaryFooter
-			$file = QualityAssurance
-			EmailQACSV $file
+			if ($dryRun -or $continue) {
+				# Copy site content
+				NewLog
+				VerifyPSRemoting
+				ReadIISPW
+				ReadCloudPW
+				ConnectCloud
+				DetectVendor
+				CloseSession
+				CreateWorkers
+				CopySites
+				EmailSummary "done"
+				CloseSession
+				SaveMigrationCSV
+				SummaryFooter
+				
+				# Delay and QA
+				Write-Host "Wait 60 seconds ..." -Fore Green
+				Sleep 60
+				$file = QualityAssurance
+				EmailQACSV $file
+			}
+		} else {
+			# HelpMessage
+			Write-Host "InsaneMove - USAGE" -Fore Yellow
+			Write-Host "==================" -Fore Yellow
+			Write-Host @"
+-verifyCloudSites (-v)		Verify all Office 365 site collections.  Prep step before real migration.
+-migrate (-mig)			Copy sites to Office 365.  Main method.
+-fileCSV (-csv)			CSV input list of source and destination SharePoint URLs to copy to Office 365.	
+
+-deleteSource (-ds)		Delete source SharePoint sites on-premise.
+-deleteDest (-dd)		Delete destination SharePoint sites in cloud.
+
+-incremental (-i)		Copy incremental changes only.  ShareGate Copy-Settings.
+-measure (-m)			Measure size of site collections in GB.
+-readOnly (-ro)			Lock sites read-only.
+-readWrite (-rw)		Unlock sites read-write.
+-noAccess (-na)			Lock sites no access.	
+-userProfile (-ups)		Update local User Profile Service with cloud personal URL.
+-dryRun (-d)			Replaces core "Copy-Site" with "NoCopy-Site" to run without data copy.
+-clean (-c)			Clean servers to preprae for next migration batch.
+
+-qualityAssurance (-qa)		Compare source and destination lists for QA check.	
+`n`n
+"@
 		}
 	}
 	# Stop transcript if running (suppress error)
