@@ -839,7 +839,7 @@ Function CopySites() {
 			
 			# ETA
 			if ($prct) {
-				$elapsed = (Get-Date) - $global:start
+				$elapsed = (Get-Date) - $start
 				$remain = ($elapsed.TotalSeconds) / ($prct / 100.0)
 				$eta = (Get-Date).AddSeconds($remain - $elapsed.TotalSeconds)
 
@@ -1196,7 +1196,7 @@ Function CheckInDocs ($url) {
 Function SummaryFooter() {
 	# Summary LOG footer
 	Write-Host "===== DONE ===== $(Get-Date)" -Fore Yellow
-	$th				= [Math]::Round(((Get-Date) - $global:start).TotalHours, 2)
+	$th				= [Math]::Round(((Get-Date) - $start).TotalHours, 2)
 	$attemptMb		= ($global:track | measure SPStorageMB -Sum).Sum
 	$actualMb		= ($global:track |? {$_.SGSessionId -ne ""} | measure SPStorageMB -Sum).Sum
 	$actualSites	= ($global:track |? {$_.SGSessionId -ne ""}).Count
@@ -1222,8 +1222,8 @@ Function SummaryFooter() {
 
 Function NewLog() {
 	# Start LOG
-	$global:start = Get-Date
-	$when = $global:start.ToString("yyyy-MM-dd-hh-mm-ss")
+	$start = Get-Date
+	$when = $start.ToString("yyyy-MM-dd-hh-mm-ss")
 	$logFile = "$root\log\InsaneMove-$when.txt"
 	mkdir "$root\log" -ErrorAction SilentlyContinue | Out-Null
 	if (!$psISE) {
