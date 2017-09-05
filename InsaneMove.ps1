@@ -163,7 +163,7 @@ Function CompareSites($sourceLists, $destinationLists) {
 	$missingList = @()
 	
 	# Define exclusion
-    $excludeLists = "Community Members", "Style Library", "Content and Structure Reports", "wfsvc","Converted Forms", "Workflow History", "Long Running Operation Status", "Access Requests", "Reporting Metadata", "Reporting Templates", "Workflows" 
+    $excludeLists = "Community Members", "Style Library", "Content and Structure Reports", "wfsvc","Converted Forms", "Workflow History", "Long Running Operation Status", "Access Requests", "Reporting Metadata", "Reporting Templates", "Workflows", "MicroFeed"
 	
 	# Inspect source lists
     foreach ($list in $sourceLists) {
@@ -300,7 +300,7 @@ Function DeleteSourceSites() {
 	$sites = Import-CSV $fileCSV
 	foreach ($s in $sites) {
 		Write-Host "Delete source site $($s.SourceURL)"
-		Remove-SPSite $s.SourceURL -Confirm:$false
+		Remove-SPSite $s.SourceURL -Confirm:$false -GradualDelete
 	}
 }
 
@@ -839,7 +839,7 @@ Function CopySites() {
 			
 			# ETA
 			if ($prct) {
-				$elapsed = (Get-Date) - $start
+				$elapsed = (Get-Date) - $global:start
 				$remain = ($elapsed.TotalSeconds) / ($prct / 100.0)
 				$eta = (Get-Date).AddSeconds($remain - $elapsed.TotalSeconds)
 
@@ -914,6 +914,7 @@ Function VerifyCloudSites() {
 
 	
 	# Loop CSV
+	$verifiedCsv = @()
 	$csv = Import-Csv $fileCSV
 	foreach ($row in $csv) {
 		$row | ft -a
@@ -921,10 +922,19 @@ Function VerifyCloudSites() {
 			# MySite
 			$global:collMySiteEmail += $row.MySiteEmail
 		} else {
-			# Team Site
-			EnsureCloudSite $row.SourceURL $row.DestinationURL $row.MySiteEmail
+			$siteFound = $null
+			$siteFound = Get-SPSite $row.SourceURL
+			if ($siteFound) {
+				# Team Site
+				EnsureCloudSite $row.SourceURL $row.DestinationURL $row.MySiteEmail
+				$verifiedCsv += $row
+			}
 		}
 	}
+
+	# Write Verified CSV
+	$verifiedFileCSV = $fileCSV.Replace(".csv", "-verified.csv")
+	$verifiedCsv | Export-Csv $verifiedFileCSV -NoTypeInformation -Force
 	
 	# Execute creation of OneDrive /personal/ sites in batches (200 each) https://technet.microsoft.com/en-us/library/dn792367.aspx
 	if ($global:collMySiteEmail) {
@@ -1196,7 +1206,7 @@ Function CheckInDocs ($url) {
 Function SummaryFooter() {
 	# Summary LOG footer
 	Write-Host "===== DONE ===== $(Get-Date)" -Fore Yellow
-	$th				= [Math]::Round(((Get-Date) - $start).TotalHours, 2)
+	$th				= [Math]::Round(((Get-Date) - $global:start).TotalHours, 2)
 	$attemptMb		= ($global:track | measure SPStorageMB -Sum).Sum
 	$actualMb		= ($global:track |? {$_.SGSessionId -ne ""} | measure SPStorageMB -Sum).Sum
 	$actualSites	= ($global:track |? {$_.SGSessionId -ne ""}).Count
@@ -1222,8 +1232,8 @@ Function SummaryFooter() {
 
 Function NewLog() {
 	# Start LOG
-	$start = Get-Date
-	$when = $start.ToString("yyyy-MM-dd-hh-mm-ss")
+	$global:start = Get-Date
+	$when = $global:start.ToString("yyyy-MM-dd-hh-mm-ss")
 	$logFile = "$root\log\InsaneMove-$when.txt"
 	mkdir "$root\log" -ErrorAction SilentlyContinue | Out-Null
 	if (!$psISE) {
