@@ -60,7 +60,11 @@ param (
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Copy sites to Office 365.  Main method.')]
 	[Alias("mig")]
-	[switch]$migrate = $false
+	[switch]$migrate = $false,
+	
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Pre-Migration Report.  Runs Copy-Site with -WhatIf')]
+	[Alias("whatif")]
+	[switch]$whatif = $false
 )
 
 # Plugin
@@ -725,9 +729,18 @@ Function ExecuteSiteCopy($row, $worker) {
 	$ps = "Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null`n`$pw='$uploadPass';md ""d:\insanemove\log"" -ErrorAction SilentlyContinue;`nStart-Transcript ""d:\insanemove\log\worker$wid-$runAsUser-$now.log"";`n""uploadUser=$uploadUser"";`n""SOURCE=$srcUrl"";`n""DESTINATION=$destUrl"";`nImport-Module ShareGate;`n`$src=`$null;`n`$dest=`$null;
 	`$secpw = ConvertTo-SecureString -String `$pw -AsPlainText -Force;
 	`$cred = New-Object System.Management.Automation.PSCredential (""$uploadUser"", `$secpw);
-	`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n# READ ONLY - Cred current user`n`$rouser = `$env:username`n`$rocred = Get-StoredCredential |? {`$_.UserName -eq `$rouser}`n# READ ONLY - Open PS Session`n`$rosess = New-PSSession -ComputerName `$env:computername -Credential `$rocred -Authentication Credssp`n# READ ONLY - Invoke Delay`n`$rocmd = ""Add-PSSnapin Microsoft.SharePoint.PowerShell`nSleep (5*60)`nSet-SPSite '$srcUrl' -LockState Unlock""`n`$rosb = [Scriptblock]::Create(`$rocmd)`n`$rojob = Invoke-Command -ScriptBlock `$rosb -Session `$rosess -AsJob`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
-	
-	# OLD;`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;`n`$result | Export-Clixml ""d:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}`nREMSet-SPSite -Identity ""$srcUrl"" -LockState ReadOnly`nWrite-Host ""Source locked read only""`nGet-SPSite ""$srcUrl"" | Select Url,ReadOnly,*Lock* | Ft -a`nStop-Transcript"
+	`n`$src = Connect-Site ""$srcUrl"";`n`$dest = Connect-Site ""$destUrl"" -Cred `$cred;
+	`nif (`$src.Url -eq `$dest.Url) {`n""SRC""`n`$src|fl`n""DEST""`n`$dest|fl
+	`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;
+	`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;
+	`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -Merge -InsaneMode -VersionLimit 50;
+	`n`$result | Export-Clixml ""D:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}
+	`nStop-Transcript"
+
+	# What If
+	if ($whatif) {
+		$ps = $ps.Replace("Copy-Site ","Copy-Site -WhatIf ")
+	}
 
 	# Dry run
 	if ($dryRun) {
@@ -1246,6 +1259,11 @@ Function NewLog() {
 }
 
 Function Main() {	
+	# Migrate with -WhatIf paramter
+	if ($whatif) {
+		$migrate = $true
+	}
+
 	# Delete source SPSites
 	if ($deleteSource) {
 		DeleteSourceSites
@@ -1354,7 +1372,8 @@ Function Main() {
 -noAccess (-na)			Lock sites no access.	
 -userProfile (-ups)		Update local User Profile Service with cloud personal URL.
 -dryRun (-d)			Replaces core "Copy-Site" with "NoCopy-Site" to run without data copy.
--clean (-c)			Clean servers to preprae for next migration batch.
+-clean (-c)				Clean servers to prepare for next migration batch.
+-whatif (-whatif)		Pre-Migration Report for Copy-Site command with results of migration issues.
 
 -qualityAssurance (-qa)		Compare source and destination lists for QA check.	
 `n`n
