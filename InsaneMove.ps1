@@ -81,6 +81,8 @@ $maxWorker = $settings.settings.maxWorker
 # Quality Assurance
 Function InspectSource($url) {
     # Connect source SPSite
+	# SOM - Server Object Model OK
+    write-host -Fore Yellow "Source:" $url
     $site = Get-SPSite $url
 	
 	# Empty collection
@@ -121,6 +123,7 @@ Function InspectSource($url) {
 
 Function InspectDestination($url) {
     # Connect to destination
+	write-host -Fore Yellow "Destination:" $url
     Connect-PnPOnline -Url $url -Credentials $global:cloudcred | Out-Null
 	
 	# Open web and lists
@@ -157,6 +160,7 @@ Function InspectDestination($url) {
 		})
         $destinationLists += $listObj
     }
+	
     return $destinationLists   
 }
 
@@ -277,7 +281,8 @@ Function QualityAssurance() {
 	$sites = Import-CSV $fileCSV
 	$report = @()
 	foreach ($s in $sites) {
-		# Get on-premise site lists
+        write-host -Fore Yellow $s 
+        # Get on-premise site lists
         $sourceLists = InspectSource $s.SourceURL
 
         # Get O365 site lists
@@ -304,6 +309,7 @@ Function DeleteSourceSites() {
 	$sites = Import-CSV $fileCSV
 	foreach ($s in $sites) {
 		Write-Host "Delete source site $($s.SourceURL)"
+ 		# SOM - Server Object Model OK
 		Remove-SPSite $s.SourceURL -Confirm:$false -GradualDelete
 	}
 }
@@ -528,13 +534,16 @@ Function CreateTracker() {
 	$csv = Import-Csv $fileCSV
 	$i = 0	
 	foreach ($row in $csv) {		
-		# Get SharePoint total storage
-		$site = Get-SPSite $row.SourceURL
-		if ($site) {
-			$SPStorage = [Math]::Round($site.Usage.Storage / 1MB, 2)
-		} else {
-			Write-Host "SITE NOT FOUND $($row.SourceURL)"
-		}
+        # Get SharePoint total storage (remotely)
+        $sb = {
+            param($siteUrl)
+            Add-PSSnapin Microsoft.SharePoint.PowerShell
+            $site = Get-SPSite $siteUrl
+            if ($site) {
+                return [Math]::Round($site.Usage.Storage / 1MB, 2)
+            }
+        }
+        $SPStorage = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $row.SourceURL
 		
 		# MySite URL Lookup
 		if ($row.MySiteEmail) {
@@ -935,13 +944,21 @@ Function VerifyCloudSites() {
 			# MySite
 			$global:collMySiteEmail += $row.MySiteEmail
 		} else {
-			$siteFound = $null
-			$siteFound = Get-SPSite $row.SourceURL
-			if ($siteFound) {
-				# Team Site
-				EnsureCloudSite $row.SourceURL $row.DestinationURL $row.MySiteEmail
-				$verifiedCsv += $row
-			}
+            $siteFound = $null
+			
+            # Detect if Site Collection exists (remotely)
+            $sb = {
+                param($siteUrl)
+                Add-PSSnapin Microsoft.SharePoint.PowerShell
+                return Get-SPSite $siteUrl
+            }
+            $siteFound = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $row.SourceURL
+
+            if ($siteFound) {
+                # Team Site
+                EnsureCloudSite $row.SourceURL $row.DestinationURL $row.MySiteEmail
+                $verifiedCsv += $row
+            }
 		}
 	}
 
@@ -990,15 +1007,7 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 	Write-Host $destUrl -Fore Yellow
 	$srcUrl
 	if ($srcUrl) {
-		$site = Get-SPSite $srcUrl
-		$web = $site.RootWeb
-		if ($web.RequestAccessEmail) {
-			#REM $upn = $web.RequestAccessEmail.Split(",;")[0].Split("@")[0] + "@fanniemae.com"; #REM + $settings.settings.tenant.suffix;
-			$upn = $settings.settings.tenant.adminUser
-		}
-		if (!$upn) {
-			$upn = $settings.settings.tenant.adminUser
-		}
+		$upn = $settings.settings.tenant.adminUser
 	}
 	
 	# Verify Site
@@ -1014,6 +1023,17 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 			# Provision MYSITE
 			$global:collMySiteEmail += $MySiteEmail
 		} else {
+			# Get Site Collection quota max (remotely)
+            $sb = {
+                param($siteUrl)
+                Add-PSSnapin Microsoft.SharePoint.PowerShell
+                $site = Get-SPSite $siteUrl
+                if ($site) {
+                    return $site.Quota.StorageMaximumLevel / 1MB
+                }
+            }
+            $quota = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $srcUrl
+
 			# Provision TEAMSITE
 			$sourceSite = Get-SPSite $srcUrl
 			$quota = $sourceSite.Quota.StorageMaximumLevel / 1MB
@@ -1195,6 +1215,7 @@ Function Clean() {
 }
 
 Function CheckInDocs ($url) {
+	# SOM - Server Object Model OK
     $site = Get-SPSite $url
     
     foreach($web in $site.AllWebs) {
@@ -1256,6 +1277,10 @@ Function NewLog() {
 		Start-Transcript $logFile
 	}
 	Write-Host "fileCSV = $fileCSV"
+}
+
+function OpenRemoteFarm() {
+    $global:remoteFarm = New-PSSession -ComputerName $settings.settings.sourceFarmServer -Credential $global:farmcred -Authentication Credssp
 }
 
 Function Main() {	
