@@ -1066,11 +1066,33 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 				Start-Sleep 2
 				Write-Host "." -NoNewline
 				$i++
-			} while (!$site -and ($i -lt 15))
+			} while (!$site -and ($i -lt 30))
 		
 			# Appy storage warning
 			Set-SPOSite $destUrl -StorageQuotaWarningLevel $quotaWarn
 			Get-SPOSite $destUrl | select Storage* | fl
+
+			# Detect Wiki libraries
+			$srcWikis = @()
+			foreach ($web in $sourceSite.allwebs) {
+				  foreach ($l in $web.lists) {
+						if ($l.BaseTemplate -eq "WebPageLibrary") {
+							  $row = New-Object PSObject -Property @{ 
+							  "ParentWebUrl" = $l.ParentWebUrl;
+							  "RootFolder" = $l.RootFolder;
+							  "Title" = $l.Title
+							  }
+						$srcWikis += $row
+						}
+				  }
+			}
+
+	  		# Create Wiki libraries
+			foreach ($w in $srcWikis) {
+				Write-Host "Creating Wiki $($w.Title) on $($w.ParentWebUrl)"
+				Connect-PNPOnline -Url $destUrl -Credentials $cred;
+				New-PNPList -Title $w.Title -Url $w.RootFolder -Template "WebPageLibrary" -EnableVersioning -OnQuickLaunch -Web $l.ParentWebUrl
+			}
 		}
 	} else {
 		Write-Host "- FOUND $destUrl"
