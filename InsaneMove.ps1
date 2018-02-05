@@ -551,7 +551,10 @@ Function CreateTracker() {
             if ($site) {
                 return [Math]::Round($site.Usage.Storage / 1MB, 2)
             }
-        }
+		}
+		if (!$global:remoteFarm) {
+			OpenRemoteFarm
+		}
         $SPStorage = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $row.SourceURL
 		
 		# MySite URL Lookup
@@ -960,7 +963,10 @@ Function VerifyCloudSites() {
                 param($siteUrl)
                 Add-PSSnapin Microsoft.SharePoint.PowerShell
                 return Get-SPSite $siteUrl
-            }
+			}
+			if (!$global:remoteFarm) {
+				OpenRemoteFarm
+			}
             $siteFound = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $row.SourceURL
 
             if ($siteFound) {
@@ -1040,7 +1046,10 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
                 if ($site) {
                     return $site.Quota.StorageMaximumLevel / 1MB
                 }
-            }
+			}
+			if (!$global:remoteFarm) {
+				OpenRemoteFarm
+			}
             $quota = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $srcUrl
 
 			# Provision TEAMSITE
