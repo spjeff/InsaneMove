@@ -63,7 +63,6 @@ param (
 	[switch]$migrate = $false,
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Pre-Migration Report.  Runs Copy-Site with -WhatIf')]
-	[Alias("whatif")]
 	[switch]$whatif = $false
 )
 
