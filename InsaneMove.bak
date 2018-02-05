@@ -400,10 +400,6 @@ Function DetectVendor() {
 	"<DetectVendor>"
 	# SharePoint Servers in local farm
 	$spservers = Get-SPServer |? {$_.Role -ne "Invalid"} | sort Address
-	$settings.settings.optionalLimitServers.Split(",") | % {
-        $obj = New-Object -TypeName PSObject -Prop (@{"Address" = $_})
-        $servers += $obj
-    }
 
 	# Detect if Vendor software installed
 	$coll = @()
