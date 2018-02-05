@@ -552,10 +552,8 @@ Function CreateTracker() {
                 return [Math]::Round($site.Usage.Storage / 1MB, 2)
             }
 		}
-		if (!$global:remoteFarm) {
-			OpenRemoteFarm
-		}
-        $SPStorage = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $row.SourceURL
+
+        $SPStorage = Invoke-Command -ScriptBlock $sb -ArgumentList $row.SourceURL
 		
 		# MySite URL Lookup
 		if ($row.MySiteEmail) {
@@ -964,10 +962,7 @@ Function VerifyCloudSites() {
                 Add-PSSnapin Microsoft.SharePoint.PowerShell
                 return Get-SPSite $siteUrl
 			}
-			if (!$global:remoteFarm) {
-				OpenRemoteFarm
-			}
-            $siteFound = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $row.SourceURL
+            $siteFound = Invoke-Command -ScriptBlock $sb -ArgumentList $row.SourceURL
 
             if ($siteFound) {
                 # Team Site
@@ -1047,10 +1042,7 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
                     return $site.Quota.StorageMaximumLevel / 1MB
                 }
 			}
-			if (!$global:remoteFarm) {
-				OpenRemoteFarm
-			}
-            $quota = Invoke-Command -ScriptBlock $sb -Session $global:remoteFarm -ArgumentList $srcUrl
+            $quota = Invoke-Command -ScriptBlock $sb -ArgumentList $srcUrl
 
 			# Provision TEAMSITE
 			$sourceSite = Get-SPSite $srcUrl
@@ -1319,9 +1311,6 @@ Function NewLog() {
 	Write-Host "fileCSV = $fileCSV"
 }
 
-function OpenRemoteFarm() {
-    $global:remoteFarm = New-PSSession -ComputerName $settings.settings.sourceFarmServer -Credential $global:farmcred -Authentication Credssp
-}
 
 Function Main() {	
 	# Migrate with -WhatIf paramter
