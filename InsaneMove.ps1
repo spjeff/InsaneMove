@@ -1441,6 +1441,11 @@ Function Main() {
 		NewLog
 		ReadCloudPW
 		ConnectCloud
+
+		# Delay - Sleep 30 minutes
+		Write-Host "Delay - Sleep 30 minutes" -Fore Red
+		Start-Sleep (30 * 60)
+
 		QualityAssurance | Out-Null
 	} else {
 		if ($migrate) {
