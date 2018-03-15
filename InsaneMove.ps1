@@ -1,18 +1,20 @@
-<#
+﻿<#
 .SYNOPSIS
 	Insane Move - Copy sites to Office 365 in parallel.  ShareGate Insane Mode times ten!
 .DESCRIPTION
 	Copy SharePoint site collections to Office 365 in parallel.  CSV input list of source/destination URLs.  XML with general preferences.
 #>
 
-[CmdletBinding()]
-param (
+[CmdletBinding()]param (
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='CSV list of source and destination SharePoint site URLs to copy to Office 365.')]
 	[string]$fileCSV,
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Verify all Office 365 site collections.  Prep step before real migration.')]
 	[Alias("v")]
 	[switch]$verifyCloudSites = $false,
+
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Verify Wiki Libraries exist on Office 365 sites.  After site collections created OK (-verify).')]
+	[switch]$verifyWiki = $false,
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Copy incremental changes only. http://help.share-gate.com/article/443-incremental-copy-copy-sharepoint-content')]
 	[Alias("i")]
@@ -59,12 +61,18 @@ param (
 	[switch]$qualityAssurance = $false,
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Copy sites to Office 365.  Main method.')]
-	[Alias("mig")]
 	[switch]$migrate = $false,
 	
 	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Pre-Migration Report.  Runs Copy-Site with -WhatIf')]
-	[switch]$whatif = $false
+	[switch]$whatif = $false,	
+		
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Leverage different narrow set of servers. MINI line from XML input file.')]
+	[switch]$mini = $false,
+
+	[Parameter(Mandatory=$false, ValueFromPipeline=$false, HelpMessage='Prep source by Allow Multi Response on Survey and Update URL metadata fields with "rootfolder" on the source.  Replace with O365 compatible shorter URL.')]
+	[switch]$prepSource = $false
 )
+
 # Plugin
 Add-PSSnapIn Microsoft.SharePoint.PowerShell -ErrorAction SilentlyContinue | Out-Null
 Import-Module Microsoft.Online.SharePoint.PowerShell -ErrorAction SilentlyContinue -WarningAction SilentlyContinue | Out-Null
@@ -75,7 +83,13 @@ Import-Module CredentialManager -ErrorAction SilentlyContinue -WarningAction Sil
 $datestamp = (Get-Date).tostring("yyyy-MM-dd-hh-mm-ss")
 $root = Split-Path -Parent -Path $MyInvocation.MyCommand.Definition
 [xml]$settings = Get-Content "$root\InsaneMove.xml"
-Write-Host -ForegroundColor Yellow $settings.settings.optionalLimitServers
+
+# Mini - Reduced server list
+$limitServer = $settings.settings.optionalLimitServers
+if ($mini) {
+	$limitServer = $settings.settings.optionalLimitServersMini
+	Write-Host -ForegroundColor Yellow $limitServer
+}
 
 # Quality Assurance
 Function InspectSource($url) {
@@ -93,16 +107,25 @@ Function InspectSource($url) {
     foreach ($web in $site.AllWebs) {
         foreach ($list in $web.Lists) {
 			# Format URL
-            $source = $list.RootFolder.ServerRelativeUrl
+			$source = $list.RootFolder.ServerRelativeUrl
+			
+			# Workflow Task List
+			$IsWorkflowTask = $false
+			if ($list.BaseTemplate.ToString() -eq "Tasks") {
+				if ($list.ContentTypes |? {$_.Name -like '*workflow*'}) {
+					$IsWorkflowTask = $true
+				}
+			}
 			
 			# Detail object
 			$listObj = New-Object -TypeName PSObject -Prop (@{
 				"List"=$source;
-				"ItemCount"=$list.ItemCount;
+				"ItemCount"=$list.Items.Count;
 				"ListTitle"=$list.Title;
 				"Web"=$web.Url;
 				"ServerRelativeUrl"=$web.ServerRelativeUrl;
 				"BaseType"=$list.BaseTemplate;
+				"IsWorkflowTask"=$IsWorkflowTask;
 			})
 			# Append to collection
             $sourceLists += $listObj
@@ -150,6 +173,9 @@ Function InspectDestination($url) {
 			$rfu = $list.RootFolder.ServerRelativeUrl.Replace('sites/490-','490-sites/').Replace('sites/ba_d-','ba_d-sites/').Replace('sites/cei-','cei-sites/').Replace('sites/comm-','comm-sites/').Replace('sites/corpadmin-','corpadmin-sites/').Replace('sites/dro-','dro-sites/').Replace('sites/dw-','dw-sites/').Replace('sites/ebusiness-','ebusiness-sites/').Replace('sites/entops-','entops-sites/').Replace('sites/eso-','eso-sites/').Replace('sites/exec-','exec-sites/').Replace('sites/finance-','finance-sites/').Replace('sites/hcd-','hcd-sites/').Replace('sites/hr-','hr-sites/').Replace('sites/lawpolicy-','lawpolicy-sites/').Replace('sites/portfolio-','portfolio-sites/').Replace('sites/ro-','ro-sites/').Replace('sites/sfmb-','sfmb-sites/').Replace('sites/sox-','sox-sites/');
 		}
 		
+		# Preview Removal
+		$sru = $sru -ireplace "_PREVIEW", ""
+		$rfu = $rfu -ireplace "_PREVIEW", ""
 		
 		# Collect list detail
 		$listObj = @()
@@ -174,8 +200,7 @@ Function CompareSites($row, $compareSourceLists, $compareDestinationLists) {
 	$missingList = @()
 	
 	# Define exclusion
-	$excludeLists = "Community Members", "Style Library", "Content and Structure Reports", "wfsvc","Converted Forms", "Workflow History", "Long Running Operation Status", "Access Requests", "Reporting Metadata", "Reporting Templates", "Workflows", "MicroFeed","Cache Profiles","Quick Deploy Items","Variation Labels","Workflow Tasks","Relationships List","Notification Pages","Notification List"
-
+	$excludeLists = "Community Members", "Style Library", "Content and Structure Reports", "wfsvc","Converted Forms", "Workflow History", "Long Running Operation Status", "Access Requests", "Reporting Metadata", "Reporting Templates", "Workflows", "MicroFeed","Cache Profiles","Quick Deploy Items","Variation Labels","Workflow Tasks","Relationships List","Notification Pages","Notification List","ContentTypeAppLog","TaxonomyHiddenList","PackageList","Suggested Content Browser Locations","Device Channels","Content Type Sync Log"
 	
 	# Inspect source lists
     foreach ($list in $compareSourceLists) {
@@ -183,6 +208,11 @@ Function CompareSites($row, $compareSourceLists, $compareDestinationLists) {
 		# Define exclusion
         $skipList = $excludeLists -contains $list.ListTitle
 		$skipPath = (($list.List -like "*_catalogs*") -or ($list.List -like "*_fpdatasources*") -or ($list.List -like "Taxonomy"))
+
+		# Worklow Task
+		if ($list.IsWorkflowTask) {
+			$skipList = $true
+		}
 		
 		# Shared Documents to /Documents
 		if ($list.List -eq "Documents" -and $list.ItemCount -eq 0) {
@@ -200,15 +230,17 @@ Function CompareSites($row, $compareSourceLists, $compareDestinationLists) {
 			
 			# Rewrite URL for Documents
 			if (!$match -and $list.List -like "*/Documents") {
-				$match = $compareDestinationLists |? { $_.List -eq $list.List -ireplace "/Documents","/Shared Documents" }
+				$matchUrl = ($list.List -ireplace "/Documents","/Shared Documents" )
+				$match = $compareDestinationLists |? { $_.List -eq $matchUrl}
 			}
 
 			# Rewrite URL for Site Pages
 			if (!$match -and $list.List -like "*/Site Pages") {
-				$match = $compareDestinationLists |? { $_.List -eq $list.List -ireplace "/Site Pages","/SitePages" }
+				$matchUrl = ($list.List -ireplace "/Site Pages","/SitePages" )
+				$match = $compareDestinationLists |? { $_.List -eq $matchUrl}
 			}
 
-
+			# Calculate difference
             $sList = $list.List
             $sTitle = $list.ListTitle
 			$sCount = $list.ItemCount
@@ -225,32 +257,6 @@ Function CompareSites($row, $compareSourceLists, $compareDestinationLists) {
 					$itemText = "$sList Src($sCount) - Dest($dCount) - Missing $diff items ($baseType)"
 					Write-Host $itemText -ForegroundColor Yellow
 					$missingItems += $itemText 
-					
-                    # $sWeb = Get-SPWeb $list.Web                   
-                    # $dWeb = $global:allWebs |? { $_.ServerRelativeUrl -eq $match.ServerRelativeUrl }
-
-					# # Document Library
-                    # if ($match.BaseType -eq "DocumentLibrary") {
-                    #     # Fetch source and destination
-                    #     $sDocs = $sWeb.Lists["$sTitle"].items
-                    #     $dDocs = Get-PNPListItem -Web $dWeb.ServerRelativeUrl -List $match.ListTitle -Fields "FileRef" | % {New-Object PSObject -Property  @{FileRef = $_["FileRef"]}}
-
-					# 	# Compare each document
-                    #     foreach ($doc in $sDocs) {
-					# 		# Format URL
-                    #         $docUrl = $doc.File.ServerRelativeUrl
-                    #         $docEndChar = $docUrl.IndexOf("-sites/")
-                    #         if ($docEndChar -gt 0) {
-                    #             $docUrl = $docUrl.remove(1,$docEndChar)
-                    #         }
-
-					# 		# Do we have a match?
-                    #         $found = $dDocs |? { $_.FileRef -eq $docUrl }
-                    #         if (!$found) {
-                    #             #REM Write-Host "    - $docUrl"
-                    #         }
-                    #     }
-                    # }
                 }
             } else {
 				# No match found.  Missing list.
@@ -265,8 +271,9 @@ Function CompareSites($row, $compareSourceLists, $compareDestinationLists) {
     if ($missingItems -or $missingList) {
         $result = "Fail"
     } else {
-        $result = "Pass"
-        Write-Host "Site migrated successfully" -BackgroundColor DarkGreen
+		$result = "Pass"
+		$SourceURL = $row.SourceURL
+        Write-Host "Site migrated successfully $SourceURL" -BackgroundColor DarkGreen
 	}
 	
 	# Source site not found
@@ -279,11 +286,31 @@ Function CompareSites($row, $compareSourceLists, $compareDestinationLists) {
 	$reportData = New-Object -TypeName PSObject -Prop (@{
 		"SourceURL"=$row.SourceURL;
 		"DestinationURL"=$row.DestinationURL;
-		"Result" = $result;
-		"Count - List w Missing Items" = $missingItems.Count;
-		"Count - Missing Lists" = $missingList.Count;
-		"Detail - List w Missing Items" = $missingItems -join ";";
-		"Detail - Missing Lists" = $missingList -join ";";
+		"QAResult" = $result;
+		"QACount - List w Missing Items" = $missingItems.Count;
+		"QACount - Missing Lists" = $missingList.Count;
+		"QADetail - List w Missing Items" = $missingItems -join ";";
+		"QADetail - Missing Lists" = $missingList -join ";";
+		"MySiteEmail" = $row.MySiteEmail;
+		"CsvID" = $row.CsvID;
+		"WorkerID" = $row.WorkerID;
+		"PC" = $row.PC;
+		"RunAsUser" = $row.RunAsUser;
+		"Status" = $row.Status;
+		"SGResult" = $row.SGResult;
+		"SGServer" = $row.SGServer;
+		"SGSessionId" = $row.SGSessionId;
+		"SGSiteObjectsCopied" = $row.SGSiteObjectsCopied;
+		"SGItemsCopied" = $row.SGItemsCopied;
+		"SGWarnings" = $row.SGWarnings;
+		"SGErrors" = $row.SGErrors;
+		"Error" = $row.Error;
+		"ErrorCount" = $row.ErrorCount;
+		"TaskXML" = $row.TaskXML;
+		"SPStorageMB" = $row.SPStorageMB;
+		"TimeCopyStart" = $row.TimeCopyStart;
+		"TimeCopyEnd" = $row.TimeCopyEnd;
+		"Durationhours" = $row.Durationhours
 	})
 
     return $reportData
@@ -292,7 +319,7 @@ Function CompareSites($row, $compareSourceLists, $compareDestinationLists) {
 Function SaveQACSV($report) {
     # Save CSV report
 	$file = $fileCSV.Replace(".csv", "-qa-report-$datestamp.csv")
-	$report | select "SourceURL","DestinationURL","Result","Count - List w Missing Items","Count - Missing Lists","Detail - List w Missing Items","Detail - Missing Lists" | Export-Csv $file -NoTypeInformation
+	$report | select "SourceURL","DestinationURL","QAResult","QACount - List w Missing Items","QACount - Missing Lists","QADetail - List w Missing Items","QADetail - Missing Lists" | Export-Csv $file -NoTypeInformation
 	Write-Host "Saved : $file" -Fore Green
 	$report | group Result |ft -a
 	return $file
@@ -306,11 +333,11 @@ Function EmailQACSV($file) {
 
 	# Stop and attach transcript
 	$log = Stop-Transcript
-	$log = $log.Replace("Transcript stopped, output file is ","")
+	#REM $log = $log.Replace("Transcript stopped, output file is ","")
 
 	# Attachment collection
 	$attach = @()
-	$attach += $log
+	#REM $attach += $log
 	$attach += $file
 
 	# Attach CSV and send
@@ -323,18 +350,20 @@ Function QualityAssurance() {
 
 	# Initialize Tracking
 	$qastart = Get-Date
-	$i = 0
+	$i = 1
 	$qatotal = $sites.Count
-
+	if (($qatotal -eq $null) -or ($qatotal -eq 0)) { $qatotal=1 }
 	foreach ($s in $sites) {
 		# Progress Tracking
 		$i++
 		$prct = [Math]::Round((($i / $qatotal) * 100.0), 2)
-	
 		$elapsed = (Get-Date) - $qastart
 		$totalTime = ($elapsed.TotalSeconds) / ($prct / 100.0)
 		$remain = $totalTime - $elapsed.TotalSeconds
 		$eta = (Get-Date).AddSeconds($remain)
+		if ($prct -gt 100) {
+			$prct=100
+		}
 		
 		# Display
 		$url = $s.SourceURL
@@ -343,16 +372,21 @@ Function QualityAssurance() {
         # Get on-premise site lists
         $srcLists = InspectSource $s.SourceURL
         # Get O365 site lists
-        $destLists = InspectDestination $s.DestinationURL
+		$destLists = InspectDestination $s.DestinationURL
+		
         # Compare source/destination
         $reportData = CompareSites $s $srcLists $destLists
 		$report += $reportData
-		
+
 		# Save QA early and often
 		SaveQACSV $report
+		# $file = $fileCSV.Replace(".csv", "-qa-report-$d?atestamp.csv")
+		# $report | select "SourceURL","DestinationURL","QAResult","QACount - List w Missing Items","QACount - Missing Lists","QADetail - List w Missing Items","QADetail - Missing Lists" | Export-Csv $file -NoTypeInformation
+		# $report | Export-Csv $file -NoTypeInformation
 	}
 	# Write QA report
 	$file = SaveQACSV $report
+	# Export-Csv $file -NoTypeInformation
 	return $file
 }
 
@@ -368,11 +402,76 @@ Function DeleteSourceSites() {
 Function DeleteDestinationSites() {
 	$sites = Import-CSV $fileCSV
 	foreach ($s in $sites) {
+		# Delete Site
 		$u = FormatCloudMP $s.DestinationURL
+		Connect-PNPOnline -Url $u -Credentials $global:cloudcred
 		Write-Host "Delete destination site $u"
 		Remove-PnPTenantSite $u -Confirm:$false -Force
+
+		# Remove from Recycle Bin
+		Clear-PnPTenantRecycleBinItem -Url $u -confirm:$false
 	}
 }
+
+Function LongUrlFix() {
+	Add-Type -AssemblyName System.Web
+
+	$sites = Import-CSV $fileCSV
+	foreach ($row in $sites) {
+		$site = get-spsite $row.SourceURL
+		foreach ($w in $site.allwebs) {
+			Write-Host $w.Url
+			foreach ($l in $w.lists) {
+				Write-Host " - " $l.Title
+				foreach ($f in $l.fields) {
+					Write-Host "." -NoNewline
+					# Hyperlink Fields Only
+					if (($f.type -eq "url")) { 
+						foreach ($item in $l.items) {
+							$before = New-Object Microsoft.SharePoint.SPFieldUrlValue($item[$f.InternalName])
+							$url = $before.URL
+							$desc = $before.Description
+							if (($url.length -gt 240) -and ($url -match "http://sharepoint") -and ($url -match "rootfolder")) {
+								# Before
+								Write-Host $url -Fore Yellow
+								$newurl = ([System.Web.HttpUtility]::UrlDecode($url)).Trim().split("?&")
+								$after = ($newurl[0].split("/")[0..2] -join "/") + ($newurl -match 'RootFolder').split("=")[-1]
+
+								# Managed Path
+								$after = $after.replace('/490-sites/','/sites/490-').replace('/ba_d-sites/','/sites/ba_d-').replace('/cei-sites/','/sites/cei-').replace('/comm-sites/','/sites/comm-').replace('/corpadmin-sites/','/sites/corpadmin-').replace('/dro-sites/','/sites/dro-').replace('/dw-sites/','/sites/dw-').replace('/ebusiness-sites/','/sites/ebusiness-').replace('/entops-sites/','/sites/entops-').replace('/eso-sites/','/sites/eso-').replace('/exec-sites/','/sites/exec-').replace('/finance-sites/','/sites/finance-').replace('/hcd-sites/','/sites/hcd-').replace('/hr-sites/','/sites/hr-').replace('/lawpolicy-sites/','/sites/lawpolicy-').replace('/portfolio-sites/','/sites/portfolio-').replace('/ro-sites/','/sites/ro-').replace('/sfmb-sites/','/sites/sfmb-').replace('/sox-sites/','/sites/sox-')
+
+								# After
+								Write-Host $after -Fore Green
+								$item[$f.InternalName] = "$after, $desc"
+								$item.Update()
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+Function SurveyAllowMulti() {
+	Add-Type -AssemblyName System.Web
+
+	$sites = Import-CSV $fileCSV
+	foreach ($row in $sites) {
+		$site = get-spsite $row.SourceURL
+		foreach ($w in $site.allwebs) {
+			Write-Host $w.Url
+			foreach ($l in $w.lists) {
+				if ($l.BaseTemplate.ToString() -eq "Survey") {
+					Write-Host "Survey allow multi - " $l.Title -Fore Green
+					$l.AllowMultiResponses = $true
+					$l.Update()
+				}
+			}
+		}
+	}
+}
+
 
 Function VerifyPSRemoting() {
 	"<VerifyPSRemoting>"
@@ -452,8 +551,8 @@ Function DetectVendor() {
 		$found = Get-ChildItem "\\$($s.Address)\C$\Program Files (x86)\Sharegate\Sharegate.exe" -ErrorAction SilentlyContinue
 		$found
 		if ($found) {
-			if ($settings.settings.optionalLimitServers) {
-				if ($settings.settings.optionalLimitServers.ToUpper().Contains($s.Address.ToUpper())) {
+			if ($limitServer) {
+				if ($limitServer.ToUpper().Contains($s.Address.ToUpper())) {
 					$coll += $s.Address
 				}
 			} else {
@@ -463,8 +562,9 @@ Function DetectVendor() {
 	}
 
 	# Ensure all servers included
-	if ($settings.settings.optionalLimitServers) {
-		foreach ($s in $settings.settings.optionalLimitServers.Split(",")) {
+	if ($limitServer) {
+		$coll = @()
+		foreach ($s in $limitServer.Split(",")) {
 			if (!$coll.Contains($s))  {
 				# Add if missing
 				$coll += $s
@@ -771,6 +871,33 @@ Function ExecuteSiteCopy($row, $worker) {
 	$adminRole = $settings.settings.tenant.adminRole
 	$uploadUser = $worker.UploadUser
 	Write-Host "Grant SCA $upn to $destUrl" -Fore Green
+
+	# Copy /images/ root folder
+	$srcSite = Get-SPSite $srcUrl
+	$webs = $srcSite | Get-SPWeb -Limit All
+	foreach ($web in $webs) {
+		Connect-PnPOnline -Url $web.Url.replace($srcUrl,$destUrl) -Cred $global:cloudcred
+		$pnpWeb = Get-PnPWeb
+		Add-PnPFolder -Name "Images" -Folder "/" -Web $pnpWeb
+
+		# Copy image files
+		$sourceFolder = $web.Url.replace("http://","\\").replace("/","\")
+		$sourceImages = Get-ChildItem "$sourceFolder/Images"
+		foreach ($si in $sourceImages)
+		{
+			$name = $si.Name
+			$name
+			Add-PnPFile -Path $si.FullName -Folder "Images" -Web $pnpWeb
+		}
+	}
+
+	# Copy default.aspx , if homepage
+	$welcome = $srcSite.RootWeb.RootFolder.WelcomePage
+	if ($welcome -eq "/default.aspx") {
+		$file = $srcSite.RootWeb.GetFile($welcome)
+		$dest = $srcSite.rootweb.ServerRelativeUrl + "/SiteAssets/default_copy.aspx"
+		$file.CopyTo($dest, $true)
+	}
 	
 	# Unlock site collection
 	$site = Get-SPOSite $destUrl
@@ -820,7 +947,7 @@ Function ExecuteSiteCopy($row, $worker) {
 	`n`$csMysite = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists Rename;
 	`n`$csIncr = New-CopySettings -OnSiteObjectExists Merge -OnContentItemExists IncrementalUpdate;
 	`n`$m=Import-UserAndGroupMapping -Path ""D:\insanemove\usermap.sgum"";
-	`n`$result = Copy-Site -Site `$src -DestinationSite `$dest -Subsites -MappingSettings `$m -Merge -InsaneMode -VersionLimit 50;
+	`n`$result = Copy-Site -Site $copyparam `$src -DestinationSite `$dest -Subsites -MappingSettings `$m -Merge -InsaneMode -VersionLimit 50;
 	`n`$result | Export-Clixml ""D:\insanemove\worker$wid-$runAsUser.xml"" -Force;`n} else {`n""URLs don't match""`n}
 	`nStop-Transcript"
 
@@ -1098,66 +1225,37 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 		if ($MySiteEmail) {
 			# Provision MYSITE
 			$global:collMySiteEmail += $MySiteEmail
-		} else {
-			# Get Site Collection quota max (remotely)
-            $sb = {
-                param($siteUrl)
-                Add-PSSnapin Microsoft.SharePoint.PowerShell
-                $site = Get-SPSite $siteUrl
-                if ($site) {
-                    return $site.Quota.StorageMaximumLevel / 1MB
-                }
-			}
-            $quota = Invoke-Command -ScriptBlock $sb -ArgumentList $srcUrl
-
-			# Provision TEAMSITE
-			$sourceSite = Get-SPSite $srcUrl
-			$quota = $sourceSite.Quota.StorageMaximumLevel / 1MB
-			# 100 GB minimum
-			if ($quota -gt (100 * 1024)) {
-				$quota = 100 * 1024
-			}
-			$quotaWarn = $quota * 0.90
+		} else {			
 			$splits = $destUrl.split("/")
 			$title = $splits[$splits.length-1]
-			Write-Host "New-PnPTenantSite"
-			Write-Host "Source URL: $srcUrl"
-			Write-Host "Quota (MB): $quota"
-			Write-Host "Quota Warn (90%): $quotaWarn"
 
 			# Create site
 			Write-Host "Creating site collection $destUrl"
-			New-PnPTenantSite -Owner $upn -Url $destUrl -StorageQuota $quota -StorageQuotaWarningLevel $quotaWarn -Title $title -TimeZone 10
+			New-PnPTenantSite -Owner $upn -Url $destUrl -Title $title -TimeZone 10
 
-			# Wait for site online
-			$i = 0
-			do {
-				$site = Get-SPOSite $destUrl
-				Start-Sleep 2
-				Write-Host "." -NoNewline
-				$i++
-			} while (!$site -and ($i -lt 30))
-		
-			# Appy storage warning
-			Set-SPOSite $destUrl -StorageQuotaWarningLevel $quotaWarn
+			# Display storage
 			Get-SPOSite $destUrl | select Storage* | fl
-
-			# Detect Wiki libraries
+		}
+	} else {
+		Write-Host "- FOUND $destUrl"
+		if ($verifyWiki) {
+			Write-Host "- VERIFY WIKI $destUrl"
+			# Detect Wiki libraries on Source
 			$srcWikis = @()
 			foreach ($web in $sourceSite.allwebs) {
-				  foreach ($l in $web.lists) {
+				foreach ($l in $web.lists) {
 						if ($l.BaseTemplate -eq "WebPageLibrary") {
-							  $row = New-Object PSObject -Property @{ 
-							  "ParentWebUrl" = $l.ParentWebUrl;
-							  "RootFolder" = $l.RootFolder;
-							  "Title" = $l.Title
-							  }
+							$row = New-Object PSObject -Property @{ 
+							"ParentWebUrl" = $l.ParentWebUrl;
+							"RootFolder" = $l.RootFolder;
+							"Title" = $l.Title
+							}
 						$srcWikis += $row
 						}
-				  }
+				}
 			}
 
-	  		# Create Wiki libraries
+			# Create Wiki libraries on Destination
 			foreach ($w in $srcWikis) {
 				if ($w.Title -ne "Site Pages") {	
 					$listUrl = $w.RootFolder.ServerRelativeUrl
@@ -1168,8 +1266,6 @@ Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
 				}
 			}
 		}
-	} else {
-		Write-Host "- FOUND $destUrl"
 	}
 }
 
@@ -1277,6 +1373,12 @@ Function UserProfileSetHybridURL() {
 Function Clean() {
 	Write-Host "<Clean>"
 	DetectVendor
+
+	# Optional Limit
+	foreach ($server in $settings.settings.optionalLimitServers.Split(",")) {
+		$global:servers += $server
+	}
+
 	foreach ($server in $global:servers) {
 		# File system
 		Write-Host " - File system"
@@ -1406,6 +1508,13 @@ Function Main() {
 		Exit
 	}
 
+	# Prep source with LongUrl & SurveyMulti
+	if ($prepSource) {
+		SurveyAllowMulti
+		LongUrlFix
+		Exit
+	}
+
 	# Core logic
 	if ($userProfile) {
 		# Update local user profiles.  Set Personal site URL for Hybrid OneDrive audience compilation and redirect
@@ -1441,11 +1550,6 @@ Function Main() {
 		NewLog
 		ReadCloudPW
 		ConnectCloud
-
-		# Delay - Sleep 30 minutes
-		Write-Host "Delay - Sleep 30 minutes" -Fore Red
-		Start-Sleep (30 * 60)
-
 		QualityAssurance | Out-Null
 	} else {
 		if ($migrate) {
@@ -1476,9 +1580,11 @@ Function Main() {
 				SaveMigrationCSV
 				SummaryFooter
 				
-				# Delay and QA
-				Write-Host "Wait 60 seconds ..." -Fore Green
-				Sleep 60
+
+				# Delay - Sleep 30 minutes
+				Write-Host "Delay - Sleep 30 minutes" -Fore Red
+				Start-Sleep (30 * 60)
+					
 				$file = QualityAssurance
 				EmailQACSV $file
 			}
