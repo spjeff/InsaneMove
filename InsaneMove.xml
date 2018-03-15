@@ -3,18 +3,20 @@
 	<tenant>
 		<adminURL>https://tenant-admin.sharepoint.com</adminURL>
 		<adminUser>spadmin@tenant.onmicrosoft.com</adminUser>
-		<adminRole>c:0-.f|rolemanager|s-1-5-21-1260933108-580135205-188289138-3192451</adminRole>
+		<adminRole>c:0-.f|rolemanager|s-1-5-21-1260933108-580135205-188289138-1234567</adminRole>
 		<adminPass>pass@word1</adminPass>
 		<suffix>tenant.onmicrosoft.com</suffix>
-		<uploadUsers>spmigration1@tenant.onmicrosoft.com,spmigration2@tenant.onmicrosoft.com,spmigration3@tenant.onmicrosoft.com,spmigration4@tenant.onmicrosoft.com</uploadUsers>
+		<uploadUsers>spmigrate1@tenant.onmicrosoft.com,spmigrate2@tenant.onmicrosoft.com,spmigrate3@tenant.onmicrosoft.com,spmigrate4@tenant.onmicrosoft.com,spmigrate5@tenant.onmicrosoft.com,spmigrate6@tenant.onmicrosoft.com,spmigrate7@tenant.onmicrosoft.com,spmigrate8@tenant.onmicrosoft.com,spmigrate9@tenant.onmicrosoft.com,spmigrate10@tenant.onmicrosoft.com,spmigrate11@tenant.onmicrosoft.com,spmigrate12@tenant.onmicrosoft.com</uploadUsers>
 		<uploadPass>pass@word1</uploadPass>
 	</tenant>
-	<maxWorker>2</maxWorker>
+	<maxWorker>1</maxWorker>
 	<notify>
 		<smtpServer>mailrelay</smtpServer>
 		<from>migration-no-reply@company.com</from>
-		<to>spteam@company.com</to>
+		<to>sharepoint_team@company.com</to>
 	</notify>
-	<optionalLimitServers>SPWFE1,SPWFE2</optionalLimitServers>
-	<optionalSchtaskUser>SPSERVICE</optionalSchtaskUser>
+	<optionalLimitServers>wfe120,wfe121,wfe122,wfe220,wfe221,wfe222</optionalLimitServers>
+	<optionalLimitServersMini>wfe121,wfe220,wfe222</optionalLimitServersMini>
+	<optionalSchtaskUser>spservice</optionalSchtaskUser>
+	<sourceFarmServer>wfe05</sourceFarmServer>
 </settings>
