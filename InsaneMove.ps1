@@ -1200,7 +1200,7 @@ Function BulkCreateMysite ($batch) {
 	Write-Host "`nBATCH New-PnPPersonaListe $($batch.count)" -Fore Green
 	$batch
 	$batch.length
-	New-PnPPersonaListe -Email $batch
+	New-PnPPersonalSite -Email $batch
 }
 
 Function EnsureCloudSite($srcUrl, $destUrl, $MySiteEmail) {
